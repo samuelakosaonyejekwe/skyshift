@@ -1,7 +1,7 @@
 // SkyShift - Time Machine: stream, display, compare, measure and hunt.
 import { $, $$, h, toast, fmtDate, fmtShortDate, fmtCoord, galStr, fmtBytes, fmtInt, download, slug, clamp, waveColor, mjdToDate } from './util.js';
 import { framesNear, getJSON, getBin } from './data.js';
-import { S3, BANDS, frameKey, obsId, skyToTan, tanToSky, cutout as cutoutMain, WCS, flagsNear } from './fits.js';
+import { S3, BANDS, frameKey, obsId, skyToTan, tanToSky, cutout as cutoutMain, WCS, flagsNear, parseHeader } from './fits.js';
 import * as R from './render.js';
 import { chart } from './charts.js';
 import { encodeGIF } from './gif.js';
@@ -16,9 +16,12 @@ const LINES = [
 ];
 const VISIT_COLORS = ['#ffb347', '#66d9ff', '#b78cff', '#5ee6a0', '#ff6b7d', '#ffd166', '#7fa8ff', '#ff9ad5'];
 const REF_SURVEYS = [
-  { id: 'CDS/P/unWISE/color-W2-W1W2-W1', label: 'NASA WISE + NEOWISE (unWISE, 2010–2020)', year: 2015 },
-  { id: 'CDS/P/allWISE/color', label: 'NASA WISE (AllWISE, 2010–2011)', year: 2010.5 },
-  { id: 'CDS/P/2MASS/color', label: '2MASS (NASA/IPAC, 1997–2001)', year: 1999 },
+  { id: 'CDS/P/unWISE/W1', label: 'NASA WISE + NEOWISE 3.4 µm (unWISE, 2010–2020)', short: 'WISE/NEOWISE 3.4 µm', years: '2010–20', dets: [4] },
+  { id: 'CDS/P/unWISE/W2', label: 'NASA WISE + NEOWISE 4.6 µm (unWISE, 2010–2020)', short: 'WISE/NEOWISE 4.6 µm', years: '2010–20', dets: [6, 5] },
+  { id: 'CDS/P/allWISE/W1', label: 'NASA WISE 3.4 µm (AllWISE, 2010)', short: 'WISE 3.4 µm', years: '2010', dets: [4] },
+  { id: 'CDS/P/2MASS/K', label: '2MASS Ks 2.2 µm (NASA/IPAC, 1997–2001)', short: '2MASS 2.2 µm', years: '1997–2001', dets: [3] },
+  { id: 'CDS/P/2MASS/H', label: '2MASS H 1.65 µm (1997–2001)', short: '2MASS 1.65 µm', years: '1997–2001', dets: [3, 2] },
+  { id: 'CDS/P/2MASS/J', label: '2MASS J 1.25 µm (1997–2001)', short: '2MASS 1.25 µm', years: '1997–2001', dets: [2] },
 ];
 
 let ctx;                       // app context: {settings, onSaved}
@@ -48,6 +51,28 @@ function effectiveMode() {
   const c = navigator.connection;
   if (m === 'auto' && c && (c.saveData || /(^|-)2g|3g/.test(c.effectiveType || ''))) return 'saver';
   return m;
+}
+
+// Reference sky (WISE/NEOWISE, 2MASS) as raw FITS on exactly our pixel grid,
+// so it gets the same stretch and colours as SPHEREx
+const refCache = new Map();
+function refImage(sv, tg, N) {
+  const key = `${sv.id}|${tg.ra.toFixed(5)}|${tg.dec.toFixed(5)}|${N}`;
+  if (!refCache.has(key)) {
+    const url = `https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=${encodeURIComponent(sv.id)}&width=${N}&height=${N}&fov=${(N * 6.15 / 3600).toFixed(6)}&projection=TAN&coordsys=icrs&ra=${tg.ra.toFixed(6)}&dec=${tg.dec.toFixed(6)}&format=fits`;
+    refCache.set(key, fetch(url).then(r => { if (!r.ok) throw new Error('ref ' + r.status); return r.arrayBuffer(); }).then(buf => {
+      const hd = parseHeader(buf, 0);
+      const c = hd.cards, w = c.NAXIS1, hh = c.NAXIS2, dv = new DataView(buf, hd.length);
+      const out = new Float32Array(N * N);
+      const flipX = (c.CDELT1 ?? c.CD1_1 ?? -1) > 0;      // we want east on the left
+      for (let y = 0; y < Math.min(N, hh); y++) for (let x = 0; x < Math.min(N, w); x++) {
+        const v = c.BITPIX === -32 ? dv.getFloat32((y * w + x) * 4, false) : dv.getFloat64((y * w + x) * 8, false);
+        out[(N - 1 - y) * N + (flipX ? N - 1 - x : x)] = v * (c.BSCALE || 1) + (c.BZERO || 0);
+      }
+      return out;
+    }).catch(e => { refCache.delete(key); throw e; }));
+  }
+  return refCache.get(key);
 }
 
 // JPL Horizons planet states + SPHEREx orbit for arcsecond-level positions
@@ -385,7 +410,7 @@ function progress() {
 
 function renderLoadNote() {
   const n = $('#loadNote');
-  n.textContent = `${S.items.length} images loaded` + (S.skipped ? ` · ${S.skipped} skipped (target in a detector gap)` : '') +
+  n.textContent = `${S.items.length} images loaded` + (S.skipped ? ` · ${S.skipped} skipped (the target fell just outside those images' edges)` : '') +
     (S.errors ? ` · ${S.errors} failed` : '') + ` · ${fmtBytes(S.bytes)} downloaded from NASA's archive`;
 }
 
@@ -440,6 +465,7 @@ function populateSelectors() {
   const vis = visible();
   if (S.mode === 'then') {
     for (const s of REF_SURVEYS) A.append(h('option', { value: s.id, text: s.label }));
+    B.append(h('option', { value: 'match', text: 'SPHEREx at the matching wavelength (stacked)' }));
     B.append(h('option', { value: 'all', text: 'SPHEREx: all images stacked' }));
     S.visits.forEach((v, i) => { if (visitItems(i).length) B.append(h('option', { value: 'v' + i, text: 'SPHEREx ' + visitLabel(i) })); });
   } else if (S.mode === 'color') {
@@ -589,19 +615,29 @@ export function render() {
     hud('False colour infrared', 'blue 0.75–1.6 µm · green 1.6–3.8 µm · red 3.8–5 µm', v === 'all' ? 'All visits' : visitLabel(+v.slice(1)), scaleBar);
     drawOverlay(null, {});
   } else if (S.mode === 'then') {
-    const sv = REF_SURVEYS.find(s => s.id === $('#selA').value) || REF_SURVEYS[0];
-    const Bv = selImage($('#selB').value || 'all');
-    if (Bv) drawMono(c, Bv.data);
-    const fov = N * 6.15 / 3600;
+    const sv = REF_SURVEYS.find(x => x.id === $('#selA').value) || REF_SURVEYS[0];
+    const bv = $('#selB').value || 'match';
+    let Bv, label;
+    if (bv === 'match') {
+      const its = S.items.filter(it => sv.dets.includes(it.f.det));
+      const use = its.length ? its : S.items;
+      const ws = use.map(it => it.r.wave).sort((a, b) => a - b);
+      Bv = { data: composite('match|' + sv.id, use) };
+      label = `SPHEREx ${ws[0].toFixed(1)}–${ws[ws.length - 1].toFixed(1)} µm`;
+    } else { Bv = selImage(bv); label = 'SPHEREx ' + (Bv ? Bv.label.replace(/\s*\(\d+ img\)/, '') : ''); }
+    if (Bv) drawMono(c, Bv.data, R.levels(Bv.data, 'auto', [25, 99.2]));
     const tg = S.target.kind === 'mover' ? S.items[0].tgt : S.target;
-    const url = `https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=${encodeURIComponent(sv.id)}&width=${Math.min(512, N * 4)}&height=${Math.min(512, N * 4)}&fov=${fov.toFixed(5)}&projection=TAN&coordsys=icrs&ra=${tg.ra.toFixed(6)}&dec=${tg.dec.toFixed(6)}&format=jpg`;
-    if (ref.dataset.src !== url) {
-      ref.dataset.src = url;
-      ref.onerror = () => toast('Reference image unavailable right now (needs internet).', 'err');
-      ref.src = url;
-    }
-    ref.hidden = false; swipe.hidden = false;
-    hud('SPHEREx ' + (Bv ? Bv.label.replace(/\(\d+ img\)/, '') : ''), sv.label, 'Left of slider: SPHEREx now · Right: ' + sv.year.toFixed(0) + ' survey', scaleBar);
+    const first = S.items.reduce((a, it) => Math.min(a, it.r.mjd), 1e9), last = S.items.reduce((a, it) => Math.max(a, it.r.mjd), 0);
+    hud(`◀ ${label} (${mjdToDate(first).getUTCFullYear()}${mjdToDate(last).getUTCFullYear() !== mjdToDate(first).getUTCFullYear() ? '–' + String(mjdToDate(last).getUTCFullYear()).slice(2) : ''})`, `${sv.short} (${sv.years}) ▶`, 'Drag the slider to compare then and now', scaleBar);
+    swipe.hidden = false;
+    const token = (S.refToken = (S.refToken || 0) + 1);
+    refImage(sv, tg, N).then(ref => {
+      if (!S || S.mode !== 'then' || S.refToken !== token) return;
+      let d = $('#optBg').checked ? R.subtractBackground(ref, N, Math.max(12, N / 6)) : ref;
+      d = R.fillHoles(d, N);
+      drawMono(cv2.getContext('2d'), d, R.levels(d, 'auto', [25, 99.2]));
+      cv2.hidden = false;
+    }).catch(() => { if (S && S.mode === 'then') toast('Reference survey image unavailable right now (needs internet).', 'err'); });
     drawOverlay(null, {});
   }
   renderFrameInfo(null);
