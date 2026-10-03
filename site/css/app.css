@@ -195,9 +195,9 @@ main { max-width: 1320px; margin: 0 auto; padding: 18px max(14px, env(safe-area-
 .hud.tl, .hud.tr, .hud.bl, .hud.br { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .hud.bl { bottom: 0; left: 0; } .hud.br { bottom: 0; right: 0; text-align: right; }
 .hud .big { font-size: 1.05rem; }
 .stage-msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; color: #dfe5ff; background: rgba(5, 7, 15, .65); z-index: 6; }
-.progress { position: absolute; left: 0; right: 0; top: 0; height: 4px; background: rgba(255, 255, 255, .08); z-index: 7; }
-.progress div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .25s; }
-.progress span { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); font-size: .75rem; color: #fff; background: rgba(0, 0, 0, .55); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.progress { position: absolute; inset: 0; z-index: 7; pointer-events: none; }
+.progress div { position: absolute; top: 0; left: 0; height: 4px; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .25s; }
+.progress span { position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); font-size: .72rem; color: #fff; background: rgba(0, 0, 0, .65); padding: 3px 10px; border-radius: 999px; white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; }
 .player { display: flex; align-items: center; gap: 8px; margin: 12px auto 4px; max-width: min(100%, 78vh); }
 .player input[type=range]#pScrub { flex: 1; accent-color: var(--accent); min-width: 60px; }
 .speed { display: flex; align-items: center; gap: 4px; font-size: .9rem; }

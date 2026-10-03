@@ -54,12 +54,12 @@ jobs:
         with:
           path: site
 
-      - name: Mirror small data files to the `data` branch (CDN redundancy)
+      - name: Mirror the data to the `data` branch (served by jsDelivr for the backup host)
         if: github.event_name != 'schedule' || github.event.schedule == '17 0 * * *'
         run: |
           set -e
           tmp=$(mktemp -d)
-          cp site/data/*.json "$tmp"/
+          cp -r site/data/. "$tmp"/
           cd "$tmp"
           git init -q -b data
           git config user.name "${{ github.repository_owner }}"
@@ -67,7 +67,18 @@ jobs:
           git add -A
           git commit -q -m "Data snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
           git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
-          curl -s -o /dev/null "https://purge.jsdelivr.net/gh/${{ github.repository }}@data/meta.json" || true
+          for f in meta.json coverage.json movers.json sso.json ephem.json exoplanets.json news.json images.json cad.json; do
+            curl -s -o /dev/null "https://purge.jsdelivr.net/gh/${{ github.repository }}@data/$f" || true
+          done
+
+      - name: Refresh the backup host (jsDelivr copy of the app)
+        if: github.event_name == 'push'
+        run: |
+          for f in $(cd site && find . -path ./data -prune -o -type f -print | sed 's|^\./||'); do
+            curl -s -o /dev/null "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/site/$f" || true
+          done
+          # warm the permanent bootstrap page on GitHack's CDN
+          curl -s -o /dev/null "https://rawcdn.githack.com/${{ github.repository }}/main/mirror/index.html" || true
 
   deploy:
     needs: build

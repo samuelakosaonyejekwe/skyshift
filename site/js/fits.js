@@ -13,15 +13,20 @@ const HOSTS = [
   'https://s3.us-east-1.amazonaws.com/nasa-irsa-spherex/',
   'https://s3.amazonaws.com/nasa-irsa-spherex/',
   'https://nasa-irsa-spherex.s3.dualstack.us-east-1.amazonaws.com/',
+  'https://nasa-irsa-spherex.s3-external-1.amazonaws.com/',
+  'https://s3-external-1.amazonaws.com/nasa-irsa-spherex/',
+  'https://s3.dualstack.us-east-1.amazonaws.com/nasa-irsa-spherex/',
 ];
-let hostRR = 0;
 const keyOf = url => url.startsWith(S3) ? url.slice(S3.length) : null;
-function viaHost(url) {
+let hostRR = 0;
+// rotate hostnames per request: measured fastest in browsers (8 hosts x 6
+// connections), even counting the CORS preflights for byte-range requests
+function viaHost(url, shift = 0) {
   const k = keyOf(url);
-  return k == null ? url : HOSTS[(hostRR++) % HOSTS.length] + k;
+  return k == null ? url : HOSTS[(hostRR++ + shift) % HOSTS.length] + k;
 }
 // global limiter so many cutouts in flight never flood the network
-const POOL = { max: 30, active: 0, q: [] };  // 5 hosts x 6 HTTP/1.1 connections
+const POOL = { max: 48, active: 0, q: [] };  // 8 hosts x 6 HTTP/1.1 connections
 function pooled(fn) {
   return new Promise((res, rej) => {
     const run = () => { POOL.active++; fn().then(res, rej).finally(() => { POOL.active--; const n = POOL.q.shift(); if (n) n(); }); };
@@ -57,7 +62,9 @@ async function range(url, start, end, signal, acc) {
   for (let i = 0; i < 3; i++) {
     try {
       const buf = await pooled(async () => {
-        const r = await fetch(i ? url : viaHost(url), { headers: { Range: hdr }, signal, mode: 'cors' });
+        // no-store: skips the browser HTTP cache, whose per-URL lock would serialise
+        // parallel range reads of the same file (SkyShift caches results in IndexedDB)
+        const r = await fetch(viaHost(url, i), { headers: { Range: hdr }, signal, mode: 'cors', cache: 'no-store' });
         if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
         const b = await r.arrayBuffer();
         stats.bytes += b.byteLength + OVERHEAD; stats.requests++;
@@ -352,7 +359,7 @@ export async function readWaveTableTail(url, signal) {
 }
 
 async function rangeSuffix(url, n, signal) {
-  const r = await fetch(url, { headers: { Range: `bytes=-${n}` }, signal, cache: 'force-cache', mode: 'cors' });
+  const r = await fetch(viaHost(url), { headers: { Range: `bytes=-${n}` }, signal, cache: 'no-store', mode: 'cors' });
   if (r.status !== 206) throw new Error('suffix range ' + r.status);
   return r.arrayBuffer();
 }

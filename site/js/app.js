@@ -36,7 +36,7 @@ const refThumb = (ra, dec, fov = 0.5) => `https://alasky.cds.unistra.fr/hips-ima
 // ------------------------------------------------------------------ settings
 const settings = {
   size: store.pref('size') ?? 64,
-  max: store.pref('max') ?? (navigator.connection?.saveData ? 24 : 48),
+  max: store.pref('max2') ?? 24,
   mask: store.pref('mask') ?? false,
   mode: store.pref('mode') ?? 'auto',
   reduceMotion: store.pref('reduceMotion') ?? matchMedia('(prefers-reduced-motion: reduce)').matches,
@@ -592,7 +592,8 @@ function setupSettings() {
   d.addEventListener('close', () => {
     const before = JSON.stringify([settings.size, settings.max, settings.mask]);
     settings.size = +$('#setSize').value; settings.max = +$('#setMax').value; settings.mask = $('#setMask').checked; settings.reduceMotion = $('#setMotion').checked; settings.mode = $('#setMode').value;
-    for (const k of ['size', 'max', 'mask', 'reduceMotion', 'mode']) store.pref(k, settings[k]);
+    for (const k of ['size', 'mask', 'reduceMotion', 'mode']) store.pref(k, settings[k]);
+    store.pref('max2', settings.max);
     if (before !== JSON.stringify([settings.size, settings.max, settings.mask]) && tmCurrent()) {
       const t = tmCurrent().target;
       toast('Settings saved. Reloading the current target.', 'ok');

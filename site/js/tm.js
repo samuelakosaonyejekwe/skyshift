@@ -303,7 +303,17 @@ async function loadFrames(list) {
     finishLoading();
     return;
   }
-  // 2) stream from NASA's archive
+  // 2) stream from NASA's archive, interleaved across visits so that the
+  //    first few images already span the whole timeline
+  {
+    const vs = visitsOf(todo.map((f, i) => ({ mjd: f.mjd, i })).sort((a, b) => a.mjd - b.mjd));
+    const groups = vs.map(v => todo.map((f, i) => i).filter(i => todo[i].mjd >= v.t0 - 1e-6 && todo[i].mjd <= v.t1 + 1e-6));
+    const order = [];
+    for (let k = 0; order.length < todo.length && k < todo.length; k++) for (const g of groups) if (g[k] != null) order.push(g[k]);
+    for (let i = 0; i < todo.length; i++) if (!order.includes(i)) order.push(i);
+    const t2 = order.map(i => todo[i]), tt2 = order.map(i => todoT[i]);
+    todo.splice(0, todo.length, ...t2); todoT.splice(0, todoT.length, ...tt2);
+  }
   const w = getWorker();
   const job = ++jobSeq;
   sess.job = job;
@@ -331,7 +341,7 @@ async function loadFrames(list) {
       else if (m.type === 'end') { w.removeEventListener('message', handler); sess.pending = Math.min(sess.pending, 0); settle(); }
     };
     w.addEventListener('message', handler);
-    w.postMessage({ cmd: 'cutouts', job, frames: todo, targets: todoT, opts: o, concurrency: 8 });
+    w.postMessage({ cmd: 'cutouts', job, frames: todo, targets: todoT, opts: o, concurrency: 14 });
   } else {
     // main-thread fallback for browsers without module workers
     const ctl = new AbortController();
