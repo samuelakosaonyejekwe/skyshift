@@ -71,6 +71,24 @@ jobs:
             curl -s -o /dev/null "https://purge.jsdelivr.net/gh/${{ github.repository }}@data/$f" || true
           done
 
+      # ---- independent second host (activates when its secret is set) ----
+      - name: Deploy to Cloudflare Pages (second host)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then echo "No Cloudflare token set; skipping."; exit 0; fi
+          npx --yes wrangler@3 pages project create skyshift --production-branch main >/dev/null 2>&1 || true
+          npx --yes wrangler@3 pages deploy site --project-name skyshift --branch main --commit-dirty=true
+
+      - name: Deploy to Netlify (second host)
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then echo "No Netlify token set; skipping."; exit 0; fi
+          npx --yes netlify-cli@17 deploy --dir site --prod --site "$NETLIFY_SITE_ID" --auth "$NETLIFY_AUTH_TOKEN" --message "SkyShift refresh"
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
