@@ -4,6 +4,32 @@
 // well under 1 MB for a cutout.  Works in a Worker or on the main thread.
 
 export const S3 = 'https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/';
+// The same public bucket answers on several hostnames (all CORS-enabled).
+// Spreading small range requests across them multiplies the browser's
+// per-host connection limit, so column-precise reads stay fast.
+const HOSTS = [
+  'https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com/',
+  'https://nasa-irsa-spherex.s3.amazonaws.com/',
+  'https://s3.us-east-1.amazonaws.com/nasa-irsa-spherex/',
+  'https://s3.amazonaws.com/nasa-irsa-spherex/',
+  'https://nasa-irsa-spherex.s3.dualstack.us-east-1.amazonaws.com/',
+];
+let hostRR = 0;
+const keyOf = url => url.startsWith(S3) ? url.slice(S3.length) : null;
+function viaHost(url) {
+  const k = keyOf(url);
+  return k == null ? url : HOSTS[(hostRR++) % HOSTS.length] + k;
+}
+// global limiter so many cutouts in flight never flood the network
+const POOL = { max: 30, active: 0, q: [] };  // 5 hosts x 6 HTTP/1.1 connections
+function pooled(fn) {
+  return new Promise((res, rej) => {
+    const run = () => { POOL.active++; fn().then(res, rej).finally(() => { POOL.active--; const n = POOL.q.shift(); if (n) n(); }); };
+    if (POOL.active < POOL.max) run(); else POOL.q.push(run);
+  });
+}
+export const stats = { bytes: 0, requests: 0 };
+const OVERHEAD = 900; // approx. HTTP request+response header bytes per range request
 export const NPIX = 2040;
 const BLOCK = 2880;
 
@@ -25,15 +51,19 @@ export function frameKey(f) {
 }
 export const obsId = f => `${f.week}_${String(f.ls).padStart(4, '0')}_${f.ss}`;
 
-async function range(url, start, end, signal) {
+async function range(url, start, end, signal, acc) {
   const hdr = end == null ? `bytes=${start}` : `bytes=${start}-${end}`;
   let last;
   for (let i = 0; i < 3; i++) {
     try {
-      const r = await fetch(url, { headers: { Range: hdr }, signal, cache: 'force-cache', mode: 'cors' });
-      if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
-      const buf = await r.arrayBuffer();
-      if (r.status === 200 && start >= 0) return buf.slice(start, end == null ? undefined : end + 1);
+      const buf = await pooled(async () => {
+        const r = await fetch(i ? url : viaHost(url), { headers: { Range: hdr }, signal, mode: 'cors' });
+        if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
+        const b = await r.arrayBuffer();
+        stats.bytes += b.byteLength + OVERHEAD; stats.requests++;
+        if (acc) acc.bytes += b.byteLength + OVERHEAD;
+        return r.status === 200 && start >= 0 ? b.slice(start, end == null ? undefined : end + 1) : b;
+      });
       return buf;
     } catch (e) {
       if (signal && signal.aborted) throw e;
@@ -80,10 +110,10 @@ function dataSize(c) {
 const pad = n => Math.ceil(n / BLOCK) * BLOCK;
 
 // Reads primary + IMAGE header.  Returns {cards, dataStart}.
-export async function readImageHeader(url, signal) {
-  let size = 12 * BLOCK; // 34.5 kB covers current SPHEREx headers (grows if needed)
+export async function readImageHeader(url, signal, acc) {
+  let size = 10 * BLOCK; // 28.8 kB covers current SPHEREx headers (grows if needed)
   for (;;) {
-    const buf = await range(url, 0, size - 1, signal);
+    const buf = await range(url, 0, size - 1, signal, acc);
     const prim = parseHeader(buf, 0);
     if (!prim) { size *= 2; continue; }
     const off = prim.length + pad(dataSize(prim.cards));
@@ -222,38 +252,52 @@ export function riceDecode(src, nx, out, outOff = 0, nblock = 32) {
 
 // ---------------------------------------------------------------- frame IO
 // Reads rows [y0, y1] x cols [x0, x1] of the IMAGE (float32 BE).
-async function readImageBlock(url, dataStart, x0, x1, y0, y1, signal) {
+// 'saver' mode fetches only the needed columns of each row (~10x less data);
+// 'fast' mode fetches the whole contiguous block of rows in one request.
+async function readImageBlock(url, dataStart, x0, x1, y0, y1, signal, mode = 'saver', acc) {
   const rowBytes = NPIX * 4;
-  const buf = await range(url, dataStart + y0 * rowBytes, dataStart + (y1 + 1) * rowBytes - 1, signal);
-  const dv = new DataView(buf);
   const w = x1 - x0 + 1, h = y1 - y0 + 1;
   const out = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    const base = y * rowBytes + x0 * 4;
-    for (let x = 0; x < w; x++) out[y * w + x] = dv.getFloat32(base + x * 4, false);
+  if (mode === 'fast') {
+    const buf = await range(url, dataStart + y0 * rowBytes, dataStart + (y1 + 1) * rowBytes - 1, signal, acc);
+    const dv = new DataView(buf);
+    for (let y = 0; y < h; y++) {
+      const base = y * rowBytes + x0 * 4;
+      for (let x = 0; x < w; x++) out[y * w + x] = dv.getFloat32(base + x * 4, false);
+    }
+    return out;
   }
+  await Promise.all(Array.from({ length: h }, async (_, y) => {
+    const a = dataStart + (y0 + y) * rowBytes + x0 * 4;
+    const dv = new DataView(await range(url, a, a + w * 4 - 1, signal, acc));
+    for (let x = 0; x < w; x++) out[y * w + x] = dv.getFloat32(x * 4, false);
+  }));
   return out;
 }
 
 // Reads the same block from FLAGS (int32 image in QR2, RICE tiles in QR3).
-async function readFlagsBlock(url, flagsHdrStart, x0, x1, y0, y1, signal) {
-  const hb = await range(url, flagsHdrStart, flagsHdrStart + 12 * BLOCK - 1, signal);
-  const h = parseHeader(hb, 0);
+const flagHdrs = new Map();
+export async function readFlagsBlock(url, flagsHdrStart, x0, x1, y0, y1, signal, acc) {
+  const hk = url + '@' + flagsHdrStart;
+  if (!flagHdrs.has(hk)) flagHdrs.set(hk, range(url, flagsHdrStart, flagsHdrStart + 7 * BLOCK - 1, signal).then(hb => parseHeader(hb, 0)));
+  const h = await flagHdrs.get(hk).catch(e => { flagHdrs.delete(hk); throw e; });
   if (!h) throw new Error('flags header');
   const c = h.cards, ds = flagsHdrStart + h.length;
   const w = x1 - x0 + 1, hh = y1 - y0 + 1;
   const out = new Int32Array(w * hh);
   if (c.XTENSION === 'IMAGE') {
     const rowBytes = NPIX * 4;
-    const buf = await range(url, ds + y0 * rowBytes, ds + (y1 + 1) * rowBytes - 1, signal);
-    const dv = new DataView(buf);
-    for (let y = 0; y < hh; y++) for (let x = 0; x < w; x++) out[y * w + x] = dv.getInt32(y * rowBytes + (x0 + x) * 4, false);
+    await Promise.all(Array.from({ length: hh }, async (_, y) => {
+      const a = ds + (y0 + y) * rowBytes + x0 * 4;
+      const dv = new DataView(await range(url, a, a + w * 4 - 1, signal, acc));
+      for (let x = 0; x < w; x++) out[y * w + x] = dv.getInt32(x * 4, false);
+    }));
     return out;
   }
   if (c.ZIMAGE && c.ZCMPTYPE === 'RICE_1' && c.ZTILE2 === 1 && c.ZBITPIX === 32) {
     const tableRow = c.NAXIS1; // bytes per table row (descriptor = 2 x int32)
     const heapStart = ds + (c.THEAP || c.NAXIS1 * c.NAXIS2);
-    const db = await range(url, ds + y0 * tableRow, ds + (y1 + 1) * tableRow - 1, signal);
+    const db = await range(url, ds + y0 * tableRow, ds + (y1 + 1) * tableRow - 1, signal, acc);
     const dv = new DataView(db);
     const desc = [];
     let lo = Infinity, hi = 0;
@@ -261,7 +305,7 @@ async function readFlagsBlock(url, flagsHdrStart, x0, x1, y0, y1, signal) {
       const n = dv.getInt32(y * tableRow, false), o = dv.getInt32(y * tableRow + 4, false);
       desc.push([n, o]); lo = Math.min(lo, o); hi = Math.max(hi, o + n);
     }
-    const heap = new Uint8Array(await range(url, heapStart + lo, heapStart + hi - 1, signal));
+    const heap = new Uint8Array(await range(url, heapStart + lo, heapStart + hi - 1, signal, acc));
     const row = new Int32Array(NPIX);
     const bs = c.ZVAL1 && c.ZNAME1 === 'BLOCKSIZE' ? c.ZVAL1 : 32;
     for (let y = 0; y < hh; y++) {
@@ -343,8 +387,9 @@ export async function getWaveTable(f, url, signal) {
 // on (ra, dec) from one SPHEREx frame.  Returns null if outside the frame.
 export async function cutout(f, target, opts, signal) {
   const url = S3 + frameKey(f);
-  const { size = 96, scale = 6.15, mask = true } = opts;
-  const { cards, dataStart } = await readImageHeader(url, signal);
+  const { size = 96, scale = 6.15, mask = true, mode = 'saver' } = opts;
+  const acc = { bytes: 0 };
+  const { cards, dataStart } = await readImageHeader(url, signal, acc);
   const wcs = new WCS(cards);
   const c = wcs.sky2pix(target.ra, target.dec);
   if (!c) return null;
@@ -370,8 +415,8 @@ export async function cutout(f, target, opts, signal) {
   const y0 = Math.max(0, Math.floor(mny) - 2), y1 = Math.min(NPIX - 1, Math.ceil(mxy) + 2);
   if (y1 - y0 < 4 || x1 - x0 < 4) return null;
   const [img, flags, wtab] = await Promise.all([
-    readImageBlock(url, dataStart, x0, x1, y0, y1, signal),
-    mask ? readFlagsBlock(url, dataStart + pad(dataSize(cards)), x0, x1, y0, y1, signal).catch(() => null) : null,
+    readImageBlock(url, dataStart, x0, x1, y0, y1, signal, mode, acc),
+    mask ? readFlagsBlock(url, dataStart + pad(dataSize(cards)), x0, x1, y0, y1, signal, acc).catch(() => null) : null,
     getWaveTable(f, url, signal).catch(() => null),
   ]);
   const bw = x1 - x0 + 1;
@@ -410,7 +455,10 @@ export async function cutout(f, target, opts, signal) {
     exptime: cards.EXPTIME || cards.TELAPSE || null,
     psf: cards.PSF_FWHM || null,
     badFrac: bad / (size * size),
-    bytes: (y1 - y0 + 1) * NPIX * 4 * (mask ? 1.6 : 1),
+    bytes: acc.bytes,
+    // enough to map back to native pixels later (hunt verification)
+    wcs: Object.fromEntries(Object.entries(cards).filter(([k]) => /^(CRPIX[12]|CRVAL[12]|CDELT[12]|PC\d_\d|CD\d_\d|A_|B_|AP_|BP_)/.test(k))),
+    flagsAt: dataStart + pad(dataSize(cards)),
   };
 }
 
@@ -421,7 +469,7 @@ export async function quicklook(key, rows = 256, bin = 4, signal) {
   const { cards, dataStart } = await readImageHeader(url, signal);
   const y0 = (NPIX - rows) >> 1, y1 = y0 + rows - 1;
   const x0 = (NPIX - rows) >> 1, x1 = x0 + rows - 1;
-  const img = await readImageBlock(url, dataStart, x0, x1, y0, y1, signal);
+  const img = await readImageBlock(url, dataStart, x0, x1, y0, y1, signal, 'fast');
   const w = rows / bin;
   const out = new Float32Array(w * w);
   for (let j = 0; j < w; j++) for (let i = 0; i < w; i++) {
@@ -435,4 +483,22 @@ export async function quicklook(key, rows = 256, bin = 4, signal) {
   const wcs = new WCS(cards);
   const [ra, dec] = wcs.pix2sky(1019.5, 1019.5);
   return { data: out, w, h: w, cards, ra, dec };
+}
+
+// Look up quality flags around native-pixel positions (hunt verification).
+// Returns, per point, the OR of BAD_FLAGS bits within +/-1 pixel.
+export async function flagsNear(f, points, flagsAt, signal) {
+  const url = S3 + frameKey(f);
+  const out = [];
+  for (const p of points) {
+    const x = Math.round(p.x), y = Math.round(p.y);
+    if (x < 1 || y < 1 || x > NPIX - 2 || y > NPIX - 2) { out.push(-1); continue; }
+    try {
+      const fl = await readFlagsBlock(url, flagsAt, x - 1, x + 1, y - 1, y + 1, signal);
+      let bits = 0;
+      for (const v of fl) bits |= v & BAD_FLAGS;
+      out.push(bits);
+    } catch { out.push(-1); }
+  }
+  return out;
 }

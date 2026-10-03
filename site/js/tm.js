@@ -1,12 +1,12 @@
 // SkyShift - Time Machine: stream, display, compare, measure and hunt.
 import { $, $$, h, toast, fmtDate, fmtShortDate, fmtCoord, galStr, fmtBytes, fmtInt, download, slug, clamp, waveColor, mjdToDate } from './util.js';
-import { framesNear, getJSON } from './data.js';
-import { S3, BANDS, frameKey, obsId, skyToTan, tanToSky, cutout as cutoutMain } from './fits.js';
+import { framesNear, getJSON, getBin } from './data.js';
+import { S3, BANDS, frameKey, obsId, skyToTan, tanToSky, cutout as cutoutMain, WCS, flagsNear } from './fits.js';
 import * as R from './render.js';
 import { chart } from './charts.js';
 import { encodeGIF } from './gif.js';
 import * as store from './store.js';
-import { unpack, objectsInField, geocentric, sep } from './orbits.js';
+import { unpack, objectsInFieldPrecise, precise, toSpacecraft, setEphem, hasEphem, sep } from './orbits.js';
 
 const D2R = Math.PI / 180;
 const VISIT_GAP = 20;           // days between survey visits
@@ -43,6 +43,21 @@ function getWorker() {
   return worker;
 }
 
+function effectiveMode() {
+  const m = ctx.settings.mode || 'auto';
+  const c = navigator.connection;
+  if (m === 'auto' && c && (c.saveData || /(^|-)2g|3g/.test(c.effectiveType || ''))) return 'saver';
+  return m;
+}
+
+// JPL Horizons planet states + SPHEREx orbit for arcsecond-level positions
+let ephemP = null;
+function loadEphem() {
+  if (!ephemP) ephemP = Promise.all([getJSON('ephem.json'), getBin('spherex_orbit.bin').catch(() => null)])
+    .then(([e, o]) => setEphem(e, o)).catch(() => { ephemP = null; return false; });
+  return ephemP;
+}
+
 // ------------------------------------------------------------------ open
 export async function openTarget(t) {
   const target = { ra: +t.ra, dec: +t.dec, name: t.name || `${(+t.ra).toFixed(3)} ${(+t.dec).toFixed(3)}`, kind: 'fixed', info: t.info, type: t.type };
@@ -75,7 +90,13 @@ export async function openMover(m) {
         const [qr, week, ver, det, ls, ss, t] = s.split('|');
         return { qr, week, ver, det: +det, ls: +ls, ss: +ss, mjd: +t };
       });
-      frames.forEach(f => { const p = trackPos(m.track, f.mjd); f.tra = p[0]; f.tdec = p[1]; f.tmag = p[2]; f.pri = 0; });
+      await loadEphem();
+      frames.forEach(f => {
+        const p = trackPos(m.track, f.mjd);
+        // Horizons tracks are geocentric; shift to SPHEREx's own viewpoint (orbital parallax)
+        const [ra, dec] = toSpacecraft(p[0], p[1], p[3], f.mjd);
+        f.tra = ra; f.tdec = dec; f.tmag = p[2]; f.pri = 0;
+      });
     } else {
       frames = await ssoFrames(m.sso);
     }
@@ -97,14 +118,15 @@ function trackPos(track, mjd) {
   const a = track[lo], b = track[hi];
   const u = clamp((mjd - a[0]) / ((b[0] - a[0]) || 1), 0, 1);
   const dra = ((b[1] - a[1] + 540) % 360) - 180;
-  return [(a[1] + dra * u + 360) % 360, a[2] + (b[2] - a[2]) * u, a[3]];
+  const delta = a[5] != null && b[5] != null ? a[5] + (b[5] - a[5]) * u : null;
+  return [(a[1] + dra * u + 360) % 360, a[2] + (b[2] - a[2]) * u, a[3], delta];
 }
 
 async function ssoFrames(o) {
   const meta = await getJSON('meta.json').catch(() => null);
   const t0 = meta?.spherex?.firstMjd ?? 60790, t1 = meta?.spherex?.lastMjd ?? (Date.now() / 864e5 + 40587);
   const pos = [];
-  for (let t = t0; t <= t1 + 1; t += 1) pos.push([t, geocentric(o, t)]);
+  for (let t = t0; t <= t1 + 1; t += 1) pos.push([t, precise(o, t, [t0, t1])]);
   // tiles along the path, then exact containment per frame
   const seen = new Map();
   const step = Math.max(1, Math.floor(pos.length / 160));
@@ -115,8 +137,10 @@ async function ssoFrames(o) {
   }
   await Promise.all(tasks);
   const out = [];
+  await loadEphem();
+  const span = [t0, t1];
   for (const f of seen.values()) {
-    const g = geocentric(o, f.mjd);
+    const g = precise(o, f.mjd, span);
     if (sep(g.ra, g.dec, f.ra, f.dec) < 1.70 && g.mag < 22.5) { f.tra = g.ra; f.tdec = g.dec; f.tmag = g.mag; f.pri = 0; out.push(f); }
   }
   return out.sort((a, b) => a.mjd - b.mjd);
@@ -227,11 +251,11 @@ function renderBadges() {
 
 // ------------------------------------------------------------------ loading
 function cacheKey(f, tgt, o) {
-  return `${frameKey(f)}|${tgt.ra.toFixed(5)}|${tgt.dec.toFixed(5)}|${o.size}|${o.mask ? 1 : 0}`;
+  return `${frameKey(f)}|${tgt.ra.toFixed(5)}|${tgt.dec.toFixed(5)}|${o.size}|${o.mask ? 1 : 0}|v2`;
 }
 
 async function loadFrames(list) {
-  const o = { size: ctx.settings.size, scale: 6.15, mask: ctx.settings.mask };
+  const o = { size: ctx.settings.size, scale: 6.15, mask: ctx.settings.mask, mode: effectiveMode() };
   const sess = S;
   const targets = list.map(f => f.tra != null ? { ra: f.tra, dec: f.tdec } : { ra: sess.target.ra, dec: sess.target.dec });
   sess.pending = list.length;
@@ -282,7 +306,7 @@ async function loadFrames(list) {
       else if (m.type === 'end') { w.removeEventListener('message', handler); sess.pending = Math.min(sess.pending, 0); settle(); }
     };
     w.addEventListener('message', handler);
-    w.postMessage({ cmd: 'cutouts', job, frames: todo, targets: todoT, opts: o, concurrency: 5 });
+    w.postMessage({ cmd: 'cutouts', job, frames: todo, targets: todoT, opts: o, concurrency: 8 });
   } else {
     // main-thread fallback for browsers without module workers
     const ctl = new AbortController();
@@ -291,7 +315,7 @@ async function loadFrames(list) {
     await Promise.all(Array.from({ length: 4 }, async () => {
       while (q.length && !ctl.signal.aborted) {
         const i = q.shift();
-        try { onFrame(i, await cutoutMain(todo[i], todoT[i], o, ctl.signal)); } catch { onErr(i); }
+        try { onFrame(i, await cutoutMain(todo[i], todoT[i], { ...o, mode: o.mode === 'auto' ? (i < 8 ? 'fast' : 'saver') : o.mode }, ctl.signal)); } catch { onErr(i); }
       }
     }));
     settle();
@@ -690,7 +714,7 @@ function drawOverlay(it, extra = {}) {
       if (!q || q[0] < -2 || q[1] < -2 || q[0] > N + 2 || q[1] > N + 2) continue;
       const [x, y] = P(q[0], q[1]);
       g.strokeStyle = 'rgba(94,230,160,.95)'; g.fillStyle = 'rgba(94,230,160,.95)';
-      g.beginPath(); g.arc(x, y, Math.max(6 * dpr, kobj.unc * k), 0, 7); g.stroke();
+      g.beginPath(); g.arc(x, y, Math.max(7 * dpr, kobj.unc * k), 0, 7); g.stroke();
       g.fillText(kobj.short, x + 8 * dpr, y - 8 * dpr);
     }
   }
@@ -708,6 +732,7 @@ function drawOverlay(it, extra = {}) {
   // hunt results
   if (S.hunt) {
     for (const d of S.hunt.list) {
+      if (d.conf === 'low' && !S.hunt.showLow) continue;
       if (it && d.mjd != null && Math.abs(d.mjd - it.r.mjd) > 1e-4 && d.kind !== 'change') continue;
       if (!it && !extra.diff && d.kind !== 'change') continue;
       const [x, y] = P(d.x, d.y);
@@ -733,6 +758,7 @@ async function computeKnown() {
   list.append(h('div', { class: 'skeleton' }));
   try {
     if (!ssoCache) ssoCache = unpack(await getJSON('sso.json'));
+    await loadEphem();
     let movers = [];
     try { movers = (await getJSON('movers.json')).movers; } catch { /* optional */ }
     if (sess !== S) return;
@@ -744,7 +770,7 @@ async function computeKnown() {
     const merged = new Map();
     for (const gp of groups) {
       const mjds = gp.items.map(it => it.r.mjd);
-      for (const k of objectsInField(ssoCache, gp.c.ra, gp.c.dec, rad, mjds, 21)) {
+      for (const k of objectsInFieldPrecise(ssoCache, gp.c.ra, gp.c.dec, rad, mjds, 21)) {
         const key = k.obj.name;
         if (S.target.sso && key === S.target.sso.name) continue;
         const e = merged.get(key) || { obj: k.obj, pts: [] };
@@ -757,13 +783,32 @@ async function computeKnown() {
         for (const t of mjds) {
           if (t < m.track[0][0] || t > m.track[m.track.length - 1][0]) continue;
           const p = trackPos(m.track, t);
-          if (sep(p[0], p[1], gp.c.ra, gp.c.dec) < rad) {
+          const [pra, pdec] = toSpacecraft(p[0], p[1], p[3], t);
+          if (sep(pra, pdec, gp.c.ra, gp.c.dec) < rad) {
             const e = merged.get(m.name) || { obj: { name: m.name, kind: 'h' }, pts: [], exact: true };
-            e.pts.push({ mjd: t, ra: p[0], dec: p[1], mag: p[2] });
+            e.pts.push({ mjd: t, ra: pra, dec: pdec, mag: p[2] });
             merged.set(m.name, e);
           }
         }
       }
+    }
+    // keep only epochs where the object actually falls inside the square image
+    const byMjd = new Map(S.items.map(it => [it.r.mjd.toFixed(5), it]));
+    for (const e of merged.values()) {
+      e.pts = e.pts.filter(pt => {
+        const it = byMjd.get(pt.mjd.toFixed(5));
+        const c = it ? it.tgt : S.target;
+        const pr = skyToTan(pt.ra, pt.dec, c.ra * D2R, Math.sin(c.dec * D2R), Math.cos(c.dec * D2R));
+        if (!pr) return false;
+        const s2 = 6.15 / 3600 * D2R, x = N / 2 - pr[0] / s2, y = N / 2 - pr[1] / s2;
+        return x >= -1 && y >= -1 && x <= N + 1 && y <= N + 1;
+      });
+    }
+    for (const [k, e] of merged) if (!e.pts.length) merged.delete(k);
+    const exactNames = new Set([...merged.values()].filter(e => e.exact).map(e => e.obj.name.toLowerCase()));
+    for (const [k, e] of merged) {
+      const short = e.obj.name.replace(/^\s*\d+\s+/, '').replace(/\s*\(.*\)$/, '').toLowerCase();
+      if (!e.exact && exactNames.has(short)) merged.delete(k);
     }
     const self = S.target.kind === 'mover' ? S.target.name.toLowerCase() : null;
     for (const e of merged.values()) {
@@ -775,8 +820,9 @@ async function computeKnown() {
         offs.sort((a, b) => a - b);
         if (offs.length && offs[Math.floor(offs.length / 2)] < 3) continue;
       }
-      const span = (Date.now() / 864e5 + 40587) - 61200;
-      out.push({ ...e, short, unc: e.exact ? 1.5 : Math.min(20, (8 + Math.abs(span) * 0.12) / 6.15) });
+      // uncertainty radius in pixels: Horizons ~1", N-body asteroids ~3", comets ~10"
+      const unc = e.exact ? 0.5 : (e.precise || e.pts[0]?.precise) ? (e.obj.kind === 'c' ? 2.5 : 0.8) : 12;
+      out.push({ ...e, short, unc });
     }
     out.sort((a, b) => Math.min(...a.pts.map(p => p.mag ?? 30)) - Math.min(...b.pts.map(p => p.mag ?? 30)));
     S.known = out;
@@ -831,6 +877,9 @@ function measureAll() {
   // variability: compare visits at matching wavelengths
   const st = $('#measureStats');
   st.textContent = '';
+  if (!S.phot.length && vis.length) {
+    st.append(h('b', { class: 'warn', text: 'No clean measurement at the crosshair. ' }), 'The source there is either too bright for SPHEREx (its detector saturates on the brightest stars) or falls on masked pixels. Tap a fainter star in the image to measure it instead.');
+  }
   if (S.phot.length) {
     const best = S.phot.reduce((a, b) => (b.m.uJy > a.m.uJy ? b : a));
     st.append(`${S.phot.length} measurements. Brightest: ${(best.m.uJy / 1000).toFixed(3)} mJy (AB ${best.m.ab ? best.m.ab.toFixed(2) : '—'}) at ${best.it.r.wave.toFixed(2)} µm. `);
@@ -895,23 +944,33 @@ async function hunt() {
         let holes = 0;
         for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (!Number.isFinite(it.r.data[k + dy * N + dx])) holes++;
         if (holes) continue;
-        list.push({ kind: 'mover', x: p.x, y: p.y, snr: p.snr, mjd: it.r.mjd, it, wave: it.r.wave });
+        // compactness: a real (point-like) source puts most residual light in the
+        // central 3x3 pixels; nebular structure and smeared artefacts do not
+        let c3 = 0, c7 = 0;
+        for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+          const q = res[k + dy * N + dx];
+          if (!(q > 0)) continue;
+          c7 += q; if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) c3 += q;
+        }
+        const comp = c7 > 0 ? c3 / c7 : 0;
+        if (comp < 0.45) continue;
+        list.push({ kind: 'mover', x: p.x, y: p.y, snr: p.snr, mjd: it.r.mjd, it, wave: it.r.wave, comp });
       }
     }
   }
   // 2) link detections into straight-line tracklets (same visit, distinct times)
   const tracks = [];
-  const det = list.slice().sort((a, b) => a.mjd - b.mjd);
+  const det = list.filter(d => d.comp >= 0.55 && d.snr >= 9).sort((a, b) => a.mjd - b.mjd);
   const used = new Set();
   for (let i = 0; i < det.length && tracks.length < 25; i++) for (let j = i + 1; j < det.length; j++) {
     const a = det[i], b = det[j], dt = b.mjd - a.mjd;
-    if (dt < 0.02 || dt > 6 || a.it.visit !== b.it.visit || used.has(a) || used.has(b)) continue;
+    if (dt < 0.02 || dt > 3 || a.it.visit !== b.it.visit || used.has(a) || used.has(b)) continue;
     const vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt;
     const dist = Math.hypot(b.x - a.x, b.y - a.y);
     if (dist < 2 || Math.hypot(vx, vy) > 120) continue;
     for (let k = j + 1; k < det.length; k++) {
       const c = det[k], dt2 = c.mjd - a.mjd;
-      if (c.mjd - b.mjd < 0.02 || c.it.visit !== a.it.visit || used.has(c)) continue;
+      if (c.mjd - b.mjd < 0.02 || dt2 > 3 || c.it.visit !== a.it.visit || used.has(c)) continue;
       if (Math.hypot(a.x + vx * dt2 - c.x, a.y + vy * dt2 - c.y) < 1.5) {
         tracks.push({ a, b, c, rate: Math.hypot(vx, vy) * 6.15 / 24 });
         used.add(a); used.add(b); used.add(c);
@@ -919,30 +978,56 @@ async function hunt() {
       }
     }
   }
-  // 3) changes between first and last visit, per band; a change must show up
-  //    in at least two bands (or the only band available) to count
+  // 3) changes between first and last visit, per band.  Candidates from the
+  //    per-band difference images are then confirmed with aperture photometry,
+  //    which integrates the whole star so PSF/orientation "dipoles" cancel and
+  //    only a genuine change in brightness survives.
   const changes = [];
   const visIds = [...new Set(vis.map(it => it.visit))].sort((a, b) => a - b);
   if (visIds.length >= 2) {
     const v0 = visIds[0], v1 = visIds[visIds.length - 1];
-    const perBand = [];
+    const bandPairs = [];
     for (const [d, items] of byDet) {
       const A0 = items.filter(it => it.visit === v0), B0 = items.filter(it => it.visit === v1);
       if (!A0.length || !B0.length) continue;
-      const A = composite(`cv${v0}|d${d}`, A0), B = composite(`cv${v1}|d${d}`, B0);
-      const dd = new Float32Array(N * N), nd = new Float32Array(N * N);
-      for (let i = 0; i < dd.length; i++) { dd[i] = B[i] - A[i]; nd[i] = -dd[i]; }
-      const found = [];
-      for (const p of R.findPeaks(dd, N, 7, 15, 5)) found.push({ ...p, sign: 1 });
-      for (const p of R.findPeaks(nd, N, 7, 15, 5)) found.push({ ...p, sign: -1 });
-      perBand.push(found);
+      bandPairs.push({ d, A: composite(`cv${v0}|d${d}`, A0), B: composite(`cv${v1}|d${d}`, B0) });
     }
-    const need = perBand.length >= 2 ? 2 : 1;
+    const cands = [];
+    for (const bp of bandPairs) {
+      const dd = new Float32Array(N * N), nd = new Float32Array(N * N);
+      for (let i = 0; i < dd.length; i++) { dd[i] = bp.B[i] - bp.A[i]; nd[i] = -dd[i]; }
+      for (const p of R.findPeaks(dd, N, 7, 15, 6)) cands.push({ ...p, sign: 1 });
+      for (const p of R.findPeaks(nd, N, 7, 15, 6)) cands.push({ ...p, sign: -1 });
+    }
+    const phot = (img, x, y) => {
+      let sum = 0, n = 0; const ann = [];
+      for (let yy = Math.floor(y - 8); yy <= Math.ceil(y + 8); yy++) for (let xx = Math.floor(x - 8); xx <= Math.ceil(x + 8); xx++) {
+        if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+        const r = Math.hypot(xx - x, yy - y), v = img[yy * N + xx];
+        if (!Number.isFinite(v)) continue;
+        if (r <= 2.8) { sum += v; n++; } else if (r >= 5 && r <= 8) ann.push(v);
+      }
+      if (n < 15 || ann.length < 20) return null;
+      ann.sort((a, b) => a - b);
+      const bg = ann[ann.length >> 1], sd = (ann[Math.floor(ann.length * 0.84)] - ann[Math.floor(ann.length * 0.16)]) / 2;
+      return { f: sum - bg * n, e: sd * Math.sqrt(n), peak: Math.max(...ann.slice(-1)) };
+    };
+    const need = bandPairs.length >= 2 ? 2 : 1;
     const seen = [];
-    for (const f of perBand.flat()) {
-      if (seen.some(s2 => s2.sign === f.sign && Math.hypot(s2.x - f.x, s2.y - f.y) < 2)) continue;
-      const votes = perBand.filter(pb => pb.some(q => q.sign === f.sign && Math.hypot(q.x - f.x, q.y - f.y) < 2)).length;
-      if (votes >= need) { seen.push(f); changes.push({ kind: 'change', x: f.x, y: f.y, snr: f.snr, sign: f.sign, votes }); }
+    for (const c of cands) {
+      if (seen.some(q => Math.hypot(q.x - c.x, q.y - c.y) < 3)) continue;
+      let agree = 0, sat = false, dsum = 0;
+      for (const bp of bandPairs) {
+        const a = phot(bp.A, c.x, c.y), b = phot(bp.B, c.x, c.y);
+        if (!a || !b) continue;
+        const k = Math.round(c.y) * N + Math.round(c.x);
+        if (bp.A[k] > 150 || bp.B[k] > 150) sat = true;          // near-saturated star core
+        const df = b.f - a.f, err = Math.hypot(a.e, b.e) || 1, rel = Math.abs(df) / Math.max(Math.abs(a.f), Math.abs(b.f), 1e-9);
+        if (Math.sign(df) === c.sign && Math.abs(df) / err > 6 && rel > 0.2) { agree++; dsum += df / err; }
+      }
+      if (sat || agree < need) continue;
+      seen.push(c);
+      changes.push({ kind: 'change', x: c.x, y: c.y, snr: Math.abs(dsum / agree), sign: c.sign, votes: agree, conf: 'high' });
     }
   }
   // 4) cross-match with known objects
@@ -961,13 +1046,30 @@ async function hunt() {
     const sky = pixToSky(d.it.tgt, d.x, d.y, N);
     d.ra = sky[0]; d.dec = sky[1];
   }
-  for (const c of changes) { const sky = pixToSky(S.target.kind === 'fixed' ? S.target : S.items[0].tgt, c.x, c.y, N); c.ra = sky[0]; c.dec = sky[1]; }
-  // pair +/- changes into proper-motion candidates
-  for (const p of changes.filter(c => c.sign > 0)) {
-    const n = changes.find(c => c.sign < 0 && Math.hypot(c.x - p.x, c.y - p.y) < 4 && !c.paired);
-    if (n) { p.pm = Math.hypot(n.x - p.x, n.y - p.y) * 6.15; n.paired = p.paired = true; }
+  // 5) verify unexplained candidates against SPHEREx's own pixel-quality flags
+  //    (cosmic rays, hot/bad pixels, ghosts, persistence, outliers)
+  const toCheck = list.filter(d => !d.known).slice(0, 40);
+  if (toCheck.length && navigator.onLine) {
+    btn.lastChild.textContent = ` Verifying ${toCheck.length} candidates…`;
+    const byFrame = new Map();
+    for (const d of toCheck) {
+      if (!d.it.r.wcs || !d.it.r.flagsAt) continue;
+      const p = new WCS(d.it.r.wcs).sky2pix(d.ra, d.dec);
+      if (!p) continue;
+      const k = frameKey(d.it.f);
+      if (!byFrame.has(k)) byFrame.set(k, { f: d.it.f, at: d.it.r.flagsAt, ds: [], pts: [] });
+      const g = byFrame.get(k); g.ds.push(d); g.pts.push({ x: p[0], y: p[1] });
+    }
+    await Promise.all([...byFrame.values()].map(async g => {
+      const bits = await flagsNear(g.f, g.pts, g.at).catch(() => g.pts.map(() => -1));
+      g.ds.forEach((d, i) => { d.flagBits = bits[i]; d.verified = bits[i] === 0 ? true : bits[i] > 0 ? false : null; });
+    }));
   }
-  const all = [...list.sort((a, b) => (a.known ? 1 : 0) - (b.known ? 1 : 0) || b.snr - a.snr), ...changes.filter(c => !c.paired || c.sign > 0)];
+  for (const d of list) d.conf = d.known ? 'known' : (d.verified === true && d.comp >= 0.55 && d.snr >= 9) ? 'high' : 'low';
+  // a tracklet only counts if every detection in it is verified or a known object
+  for (let i = tracks.length - 1; i >= 0; i--) if ([tracks[i].a, tracks[i].b, tracks[i].c].some(d => d.conf === 'low')) tracks.splice(i, 1);
+  for (const c of changes) { const sky = pixToSky(S.target.kind === 'fixed' ? S.target : S.items[0].tgt, c.x, c.y, N); c.ra = sky[0]; c.dec = sky[1]; }
+  const all = [...list.sort((a, b) => (a.known ? 1 : 0) - (b.known ? 1 : 0) || b.snr - a.snr), ...changes];
   S.hunt = { list: all, tracks, sel: null };
   renderHunt();
   btn.disabled = false; btn.lastChild.textContent = ' Scan again';
@@ -983,8 +1085,8 @@ function renderHunt() {
   const out = $('#huntOut');
   out.textContent = '';
   const H = S.hunt;
-  const nk = H.list.filter(d => d.known).length, nc = H.list.filter(d => d.kind === 'mover' && !d.known).length, nch = H.list.filter(d => d.kind === 'change').length;
-  out.append(h('p', { class: 'small' }, h('b', { text: `${nk} known · ${nc} unexplained single-image sources · ${nch} changes between visits · ${H.tracks.length} moving tracklets` })));
+  const nk = H.list.filter(d => d.known).length, nc = H.list.filter(d => d.conf === 'high').length, nch = H.list.filter(d => d.kind === 'change').length;
+  out.append(h('p', { class: 'small' }, h('b', { text: `${nk} known objects · ${nc} verified unexplained source${nc === 1 ? '' : 's'} · ${nch} changes between visits · ${H.tracks.length} moving tracklet${H.tracks.length === 1 ? '' : 's'}` })));
   if (H.tracks.length) {
     out.append(h('h3', { text: 'Moving tracklets (3+ detections in a line)' }));
     for (const t of H.tracks.slice(0, 10)) {
@@ -993,8 +1095,15 @@ function renderHunt() {
         h('button', { class: 'btn sm', type: 'button', text: 'Show', onclick: () => { S.hunt.sel = t.a; jumpToMjd(t.a.mjd); } })));
     }
   }
-  for (const d of H.list.slice(0, 80)) {
-    const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: 'pill change', text: d.pm ? 'MOVED' : d.sign > 0 ? 'BRIGHTER' : 'FAINTER' }) : h('span', { class: 'pill cand', text: 'CANDIDATE' });
+  const lows = H.list.filter(d => d.conf === 'low');
+  const shown = H.showLow ? H.list : H.list.filter(d => d.conf !== 'low');
+  if (lows.length) {
+    out.append(h('p', { class: 'small muted' }, `${lows.length} low-confidence detection${lows.length > 1 ? 's' : ''} (flagged by SPHEREx quality bits as cosmic rays, hot pixels or ghosts, or not star-shaped) ${H.showLow ? 'shown' : 'hidden'}. `,
+      h('button', { class: 'btn sm', type: 'button', text: H.showLow ? 'Hide them' : 'Show them', onclick: () => { H.showLow = !H.showLow; renderHunt(); drawOverlay(currentItem()); } })));
+  }
+  for (const d of shown.slice(0, 80)) {
+    const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: 'pill change', text: d.pm ? 'MOVED' : d.sign > 0 ? 'BRIGHTER' : 'FAINTER' })
+      : d.conf === 'high' ? h('span', { class: 'pill cand', title: 'Star-shaped, clean pixels in SPHEREx quality flags, high S/N', text: 'VERIFIED ✓' }) : h('span', { class: 'pill', title: d.flagBits > 0 ? 'SPHEREx quality flags mark these pixels' : 'Weak or not verified', text: d.flagBits > 0 ? 'FLAGGED' : 'LOW' });
     const title = d.known ? d.known : d.kind === 'change' ? (d.pm ? `Shifted ≈${d.pm.toFixed(0)}″ between visits` : `${d.sign > 0 ? 'Brightened' : 'Faded'} between visits`) : `Single-image source at ${d.wave.toFixed(2)} µm`;
     out.append(h('div', { class: 'item' }, pill,
       h('div', { class: 'grow' }, h('b', { text: title }), h('span', { class: 't', text: `${d.ra.toFixed(5)}°, ${d.dec.toFixed(5)}° · S/N ${d.snr.toFixed(0)}${d.mjd ? ' · ' + fmtDate(d.mjd, true) : ''}` })),

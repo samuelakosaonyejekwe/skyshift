@@ -10,7 +10,7 @@ const ASSETS = [
   'js/orbits.js', 'js/charts.js', 'js/gif.js', 'js/store.js', 'js/util.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
 ];
-const DATA_WARM = ['data/meta.json', 'data/coverage.json', 'data/movers.json', 'data/exoplanets.json', 'data/news.json', 'data/images.json', 'data/cad.json'];
+const DATA_WARM = ['data/meta.json', 'data/coverage.json', 'data/movers.json', 'data/exoplanets.json', 'data/news.json', 'data/images.json', 'data/cad.json', 'data/ephem.json'];
 
 self.addEventListener('install', e => {
   e.waitUntil((async () => {
@@ -19,7 +19,7 @@ self.addEventListener('install', e => {
     const d = await caches.open(DATA);
     await Promise.all(DATA_WARM.map(u => fetch(u, { cache: 'no-store' }).then(r => r.ok && d.put(u, r)).catch(() => {})));
     // warm the asteroid/comet catalogue in the background (not required to install)
-    fetch('data/sso.json').then(r => r.ok && d.put('data/sso.json', r)).catch(() => {});
+    for (const u of ['data/sso.json', 'data/spherex_orbit.bin']) fetch(u).then(r => r.ok && d.put(u, r)).catch(() => {});
   })());
 });
 

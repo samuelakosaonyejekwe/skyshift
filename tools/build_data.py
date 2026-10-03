@@ -287,10 +287,14 @@ def fetch_sso():
                 m1 = r[ix["M1"]]
                 mag = float(m1) if m1 not in (None, "") else 12.0
             # tp is a Julian date (TDB) -> store as MJD
-            out.append([name, kind, round(e, 7), round(q, 7), round(inc, 5), round(om, 5),
-                        round(w, 5), round(tp - 2400000.5, 5), round(mag, 2)])
+            try:
+                epoch = float(r[ix["epoch"]]) - 2400000.5
+            except (TypeError, ValueError):
+                epoch = tp - 2400000.5
+            out.append([name, kind, round(e, 8), round(q, 8), round(inc, 6), round(om, 6),
+                        round(w, 6), round(tp - 2400000.5, 5), round(mag, 2), round(epoch, 1)])
         log(f"SBDB {kind}: {len(js['data'])} objects")
-    write_json("sso.json", {"fields": ["name", "kind", "e", "q", "i", "om", "w", "tpMjd", "H"],
+    write_json("sso.json", {"fields": ["name", "kind", "e", "q", "i", "om", "w", "tpMjd", "H", "epochMjd"],
                             "epoch": "J2000 ecliptic", "data": out,
                             "built": utcnow().isoformat() + "Z"})
     return len(out)
@@ -358,6 +362,60 @@ def horizons(cmd, start, stop, step):
                     None if mag is None else round(mag, 2),
                     None if r is None else round(r, 4), None if delta is None else round(delta, 5)])
     return pts
+
+
+def horizons_vectors(cmd, center, start, stop, step, plane, units):
+    q = {
+        "format": "json", "COMMAND": f"'{cmd}'", "OBJ_DATA": "NO", "MAKE_EPHEM": "YES", "EPHEM_TYPE": "VECTORS",
+        "CENTER": f"'{center}'", "START_TIME": f"'{start}'", "STOP_TIME": f"'{stop}'", "STEP_SIZE": f"'{step}'",
+        "VEC_TABLE": "'2'", "REF_PLANE": f"'{plane}'", "OUT_UNITS": f"'{units}'", "CSV_FORMAT": "YES",
+        "VEC_LABELS": "NO", "TIME_DIGITS": "FRACSEC",
+    }
+    js = json.loads(http("https://ssd.jpl.nasa.gov/api/horizons.api?" + urllib.parse.urlencode(q), timeout=300))
+    res = js.get("result", "")
+    if "$$SOE" not in res:
+        raise RuntimeError(res[-300:])
+    rows = []
+    for line in res.split("$$SOE")[1].split("$$EOE")[0].strip().splitlines():
+        c = [x.strip() for x in line.split(",")]
+        try:
+            rows.append([float(c[0]) - 2400000.5] + [float(v) for v in c[2:8]])
+        except (ValueError, IndexError):
+            continue
+    return rows
+
+
+def fetch_ephem():
+    """Heliocentric ecliptic J2000 state vectors (au, au/day) of the Earth and
+    the perturbing planets, daily, plus SPHEREx's own geocentric orbit."""
+    start = mjd_to_iso(MJD0 - 5)[:10]
+    stop = (utcnow() + dt.timedelta(days=40)).strftime("%Y-%m-%d")
+    bodies = {"earth": "399", "venus": "299", "mars": "4", "jupiter": "5", "saturn": "6", "uranus": "7", "neptune": "8"}
+    out = {"t0": None, "step": 1.0, "bodies": {}}
+    for name, cmd in bodies.items():
+        rows = horizons_vectors(cmd, "500@10", start, stop, "1d", "ECLIPTIC", "AU-D")
+        out["t0"] = rows[0][0]
+        out["bodies"][name] = [round(v, 11) for r in rows for v in r[1:]]
+        log(f"Horizons vectors {name}: {len(rows)}")
+    write_json("ephem.json", out)
+    # SPHEREx position relative to Earth's centre (equatorial ICRF, km), 20-min
+    # steps, so the app can correct for the telescope's orbital parallax
+    t = dt.datetime(2025, 4, 20)
+    end = utcnow() + dt.timedelta(days=2)
+    recs = []
+    while t < end:
+        t2 = min(end, t + dt.timedelta(days=60))
+        rows = horizons_vectors("-163182", "500@399", t.strftime("%Y-%m-%d %H:%M"), t2.strftime("%Y-%m-%d %H:%M"), "20m", "FRAME", "KM-S")
+        if recs and rows and rows[0][0] <= recs[-1][0] + 1e-6:
+            rows = rows[1:]
+        recs += rows
+        t = t2
+    buf = bytearray(b"SXO1") + struct.pack("<dI", recs[0][0], len(recs)) + struct.pack("<d", 20 / 1440)
+    for r in recs:
+        buf += struct.pack("<6f", *r[1:])
+    with open(os.path.join(OUT, "spherex_orbit.bin"), "wb") as fh:
+        fh.write(buf)
+    log(f"SPHEREx orbit: {len(recs)} states")
 
 
 def angdist(ra1, de1, ra2, de2):
@@ -556,13 +614,15 @@ def main():
         status["spherex"] = f"kept previous ({e.__class__.__name__})" if restored else "unavailable"
 
     for key, fn in (("sso", fetch_sso), ("exoplanets", fetch_exoplanets), ("cad", fetch_cad),
-                    ("news", fetch_news), ("images", fetch_images)):
+                    ("news", fetch_news), ("images", fetch_images), ("ephem", fetch_ephem)):
         try:
             fn()
             status[key] = "ok"
         except Exception as e:  # noqa: BLE001
             log(f"{key} FAILED - keeping previous:", e)
             restore(f"{key}.json")
+            if key == "ephem":
+                restore("spherex_orbit.bin", True)
             status[key] = f"kept previous ({e.__class__.__name__})"
 
     if frames:

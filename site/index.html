@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://alasky.cds.unistra.fr https://images-assets.nasa.gov https://www.nasa.gov https://science.nasa.gov; connect-src 'self' https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com https://cdn.jsdelivr.net https://raw.githubusercontent.com https://cds.unistra.fr https://images-api.nasa.gov https://www.nasa.gov https://alasky.cds.unistra.fr; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://alasky.cds.unistra.fr https://images-assets.nasa.gov https://www.nasa.gov https://science.nasa.gov; connect-src 'self' https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com https://nasa-irsa-spherex.s3.amazonaws.com https://s3.us-east-1.amazonaws.com https://s3.amazonaws.com https://nasa-irsa-spherex.s3.dualstack.us-east-1.amazonaws.com https://cdn.jsdelivr.net https://raw.githubusercontent.com https://cds.unistra.fr https://images-api.nasa.gov https://www.nasa.gov https://alasky.cds.unistra.fr; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <title>SkyShift · SPHEREx Sky Time Machine</title>
 <meta name="description" content="Watch the infrared sky change over time with real NASA SPHEREx images. Blink, compare, measure spectra and hunt moving objects — free, installable, works offline.">
@@ -343,7 +343,8 @@
   <form method="dialog" class="dlg">
     <h2 id="dlgSettingsH">Settings</h2>
     <label>Image size <select id="setSize"><option value="48">Small: 5′ (fastest)</option><option value="64">Medium: 6.5′</option><option value="96">Large: 10′</option><option value="128">Huge: 13′ (more data)</option></select></label>
-    <label>Images per target <select id="setMax"><option value="24">24 (data saver)</option><option value="48">48</option><option value="96">96</option><option value="200">200</option><option value="100000">All</option></select></label>
+    <label>Images per target <select id="setMax"><option value="24">24</option><option value="48">48</option><option value="96">96</option><option value="200">200</option><option value="100000">All</option></select></label>
+    <label>Download mode <select id="setMode"><option value="auto">Auto: first images instantly, the rest with minimal data (recommended)</option><option value="saver">Data saver: only the pixels needed (~0.12 MB per image, slower)</option><option value="fast">Fast: whole rows (~0.65 MB per image)</option></select></label>
     <label class="inline"><input type="checkbox" id="setMask"> Remove bad pixels using SPHEREx quality flags (uses ~50% more data)</label>
     <label class="inline"><input type="checkbox" id="setMotion"> Reduce motion (no auto-play)</label>
     <p class="muted small" id="dataUse"></p>

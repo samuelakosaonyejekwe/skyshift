@@ -111,7 +111,7 @@ export function geocentric(el, mjd, E = earth(mjd)) {
 }
 
 export function unpack(sso) {
-  return sso.data.map(r => ({ name: r[0], kind: r[1], e: r[2], q: r[3], i: r[4], om: r[5], w: r[6], tp: r[7], H: r[8] }));
+  return sso.data.map(r => ({ name: r[0], kind: r[1], e: r[2], q: r[3], i: r[4], om: r[5], w: r[6], tp: r[7], H: r[8], epoch: r[9] }));
 }
 
 export function sep(ra1, de1, ra2, de2) {
@@ -142,6 +142,165 @@ export function objectsInField(objs, ra, dec, radiusDeg, mjds, magLimit = 21) {
       if (sep(g.ra, g.dec, ra, dec) < radiusDeg && g.mag < magLimit) pts.push({ mjd: t, ...g });
     }
     if (pts.length) out.push({ obj: o, pts });
+  }
+  return out;
+}
+
+// =====================================================================
+// High-accuracy mode: N-body integration (Sun + 7 planets) from the SBDB
+// osculating epoch, planet states from JPL Horizons (data/ephem.json), and
+// the SPHEREx spacecraft's own orbit for parallax (data/spherex_orbit.bin).
+// Typical agreement with JPL Horizons: a few arcseconds.
+// =====================================================================
+const K2 = K * K;
+const MASS = { venus: 1 / 408523.71, earth: 1 / 328900.56, mars: 1 / 3098703.59, jupiter: 1 / 1047.348644, saturn: 1 / 3497.9018, uranus: 1 / 22902.94, neptune: 1 / 19412.26 };
+const TDB = 69.184 / 86400;          // UTC -> TDB (days), valid 2017+
+let EPH = null, ORB = null;
+
+export function setEphem(eph, orbitBuf) {
+  if (eph && eph.bodies) {
+    const b = {};
+    for (const [k, arr] of Object.entries(eph.bodies)) b[k] = Float64Array.from(arr);
+    EPH = { t0: eph.t0, step: eph.step, n: b.earth.length / 6, b };
+  }
+  if (orbitBuf) {
+    const dv = new DataView(orbitBuf);
+    if (String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)) === 'SXO1') {
+      const t0 = dv.getFloat64(4, true), n = dv.getUint32(12, true), step = dv.getFloat64(16, true);
+      ORB = { t0, n, step, v: new Float32Array(orbitBuf.slice(24, 24 + n * 24)) };
+    }
+  }
+  return !!EPH;
+}
+export const hasEphem = () => !!EPH;
+
+function hermite(arr, i, s, h, out) {
+  const s2 = s * s, s3 = s2 * s;
+  const h00 = 2 * s3 - 3 * s2 + 1, h10 = s3 - 2 * s2 + s, h01 = -2 * s3 + 3 * s2, h11 = s3 - s2;
+  const a = i * 6, c = a + 6;
+  for (let k = 0; k < 3; k++) out[k] = h00 * arr[a + k] + h10 * h * arr[a + 3 + k] + h01 * arr[c + k] + h11 * h * arr[c + 3 + k];
+  return out;
+}
+function bodyAt(name, tdb, out = [0, 0, 0]) {
+  const x = (tdb - EPH.t0) / EPH.step;
+  const i = Math.max(0, Math.min(EPH.n - 2, Math.floor(x)));
+  return hermite(EPH.b[name], i, x - i, EPH.step, out);
+}
+const inEph = tdb => EPH && tdb >= EPH.t0 && tdb <= EPH.t0 + (EPH.n - 1) * EPH.step;
+
+// SPHEREx offset from the geocentre, equatorial, in au
+function spacecraft(mjd) {
+  if (!ORB) return null;
+  const x = (mjd + TDB - ORB.t0) / ORB.step;
+  if (x < 0 || x > ORB.n - 1) return null;
+  const i = Math.min(ORB.n - 2, Math.floor(x));
+  const v = ORB.v, a = i * 6, c = a + 6, s = x - i, h = ORB.step * 86400; // velocities are km/s
+  const s2 = s * s, s3 = s2 * s;
+  const h00 = 2 * s3 - 3 * s2 + 1, h10 = s3 - 2 * s2 + s, h01 = -2 * s3 + 3 * s2, h11 = s3 - s2;
+  const AU = 149597870.7;
+  return [0, 1, 2].map(k => (h00 * v[a + k] + h10 * h * v[a + 3 + k] + h01 * v[c + k] + h11 * h * v[c + 3 + k]) / AU);
+}
+
+const PLANETS = Object.keys(MASS);
+const tmp = [0, 0, 0];
+function accel(t, r, out) {
+  const r2 = r[0] * r[0] + r[1] * r[1] + r[2] * r[2], r3 = r2 * Math.sqrt(r2);
+  out[0] = -K2 * r[0] / r3; out[1] = -K2 * r[1] / r3; out[2] = -K2 * r[2] / r3;
+  for (const p of PLANETS) {
+    const q = bodyAt(p, t, tmp);
+    const dx = q[0] - r[0], dy = q[1] - r[1], dz = q[2] - r[2];
+    const d2 = dx * dx + dy * dy + dz * dz, d3 = d2 * Math.sqrt(d2);
+    const q2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2], q3 = q2 * Math.sqrt(q2);
+    const gm = K2 * MASS[p];
+    out[0] += gm * (dx / d3 - q[0] / q3); out[1] += gm * (dy / d3 - q[1] / q3); out[2] += gm * (dz / d3 - q[2] / q3);
+  }
+  return out;
+}
+
+// integrate state y=[x,y,z,vx,vy,vz] from t to t+h (RK4)
+function rk4(t, y, h) {
+  const f = (tt, yy) => { const a = accel(tt, yy, [0, 0, 0]); return [yy[3], yy[4], yy[5], a[0], a[1], a[2]]; };
+  const k1 = f(t, y);
+  const y2 = y.map((v, i) => v + h / 2 * k1[i]); const k2 = f(t + h / 2, y2);
+  const y3 = y.map((v, i) => v + h / 2 * k2[i]); const k3 = f(t + h / 2, y3);
+  const y4 = y.map((v, i) => v + h * k3[i]); const k4 = f(t + h, y4);
+  return y.map((v, i) => v + h / 6 * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
+}
+
+const TRACKS = new Map();
+// Dense heliocentric track (Hermite samples) covering [t0, t1] (TDB)
+function track(el, t0, t1) {
+  const key = el.name;
+  let tr = TRACKS.get(key);
+  if (tr && tr.t0 <= t0 && tr.t1 >= t1) return tr;
+  const ep = el.epoch ?? el.tp;
+  const h = el.q < 1.3 ? 0.25 : 0.5;
+  // initial state at epoch from the osculating two-body orbit
+  const p0 = helio(el, ep), pa = helio(el, ep - 0.005), pb = helio(el, ep + 0.005);
+  const y0 = [...p0, (pb[0] - pa[0]) / 0.01, (pb[1] - pa[1]) / 0.01, (pb[2] - pa[2]) / 0.01];
+  const lo = Math.min(t0, ep) - 1, hi = Math.max(t1, ep) + 1;
+  const n = Math.ceil((hi - lo) / h) + 1;
+  const S = new Float64Array(n * 6);
+  const iEp = Math.round((ep - lo) / h);
+  const put = (i, y) => { for (let k = 0; k < 6; k++) S[i * 6 + k] = y[k]; };
+  put(iEp, y0);
+  let y = y0;
+  for (let i = iEp; i < n - 1; i++) { y = rk4(lo + i * h, y, h); put(i + 1, y); }
+  y = y0;
+  for (let i = iEp; i > 0; i--) { y = rk4(lo + i * h, y, -h); put(i - 1, y); }
+  tr = { t0: lo, t1: lo + (n - 1) * h, h, n, S, ep: lo };
+  TRACKS.set(key, tr);
+  if (TRACKS.size > 400) TRACKS.delete(TRACKS.keys().next().value);
+  return tr;
+}
+function trackAt(tr, t) {
+  const x = (t - tr.ep) / tr.h;
+  const i = Math.max(0, Math.min(tr.n - 2, Math.floor(x)));
+  return hermite(tr.S, i, x - i, tr.h, [0, 0, 0]);
+}
+
+// Apparent position as seen by SPHEREx (falls back to two-body/geocentric).
+export function precise(el, mjd, span) {
+  const t = mjd + TDB;
+  if (!inEph(t) || !(el.epoch ?? el.tp)) return geocentric(el, mjd);
+  const tr = track(el, span ? span[0] + TDB - 2 : t - 2, span ? span[1] + TDB + 2 : t + 2);
+  const E = bodyAt('earth', t, [0, 0, 0]);
+  let p = trackAt(tr, t);
+  let d = Math.hypot(p[0] - E[0], p[1] - E[1], p[2] - E[2]);
+  p = trackAt(tr, t - d / C_AU_D);
+  let g = eclToEq([p[0] - E[0], p[1] - E[1], p[2] - E[2]]);
+  const sc = spacecraft(mjd);
+  if (sc) g = [g[0] - sc[0], g[1] - sc[1], g[2] - sc[2]];
+  d = Math.hypot(...g);
+  const r = Math.hypot(...p);
+  const ra = ((Math.atan2(g[1], g[0]) / D2R) + 360) % 360, dec = Math.asin(g[2] / d) / D2R;
+  const two = geocentric(el, mjd);   // reuse its magnitude model
+  return { ra, dec, delta: d, r, mag: two.mag, precise: true };
+}
+
+// Shift a geocentric RA/Dec (e.g. from a Horizons track) to SPHEREx's viewpoint.
+export function toSpacecraft(ra, dec, delta, mjd) {
+  const sc = spacecraft(mjd);
+  if (!sc || !(delta > 0.0005)) return [ra, dec];
+  const cr = Math.cos(ra * D2R), sr = Math.sin(ra * D2R), cd = Math.cos(dec * D2R), sd = Math.sin(dec * D2R);
+  const g = [delta * cd * cr - sc[0], delta * cd * sr - sc[1], delta * sd - sc[2]];
+  const d = Math.hypot(...g);
+  return [((Math.atan2(g[1], g[0]) / D2R) + 360) % 360, Math.asin(g[2] / d) / D2R];
+}
+
+export function objectsInFieldPrecise(objs, ra, dec, radiusDeg, mjds, magLimit = 21) {
+  if (!EPH) return objectsInField(objs, ra, dec, radiusDeg, mjds, magLimit);
+  // two-body prefilter with extra margin, then N-body for the survivors
+  const rough = objectsInField(objs, ra, dec, radiusDeg + 0.15, mjds, magLimit + 0.5);
+  const span = [Math.min(...mjds), Math.max(...mjds)];
+  const out = [];
+  for (const k of rough) {
+    const pts = [];
+    for (const t of mjds) {
+      const g = precise(k.obj, t, span);
+      if (sep(g.ra, g.dec, ra, dec) < radiusDeg && g.mag < magLimit) pts.push({ mjd: t, ...g });
+    }
+    if (pts.length) out.push({ obj: k.obj, pts, precise: true });
   }
   return out;
 }

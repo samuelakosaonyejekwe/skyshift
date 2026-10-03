@@ -16,8 +16,8 @@ It installs like an app on any phone, tablet or computer, and keeps working offl
 | **Explore** | All-sky map of SPHEREx coverage (1.47 million images, 100 % of the sky). Tap anywhere to open it. Featured targets, exoplanet hosts, newest frames. |
 | **Time Machine** | Every SPHEREx image of a spot, in time order. **Movie**, **Blink** (the method that found Pluto), **Difference** (wavelength-matched), false-**Colour**, and **Then & now** against NASA WISE/NEOWISE and 2MASS. |
 | **Spectrum & light curve** | Tap any star: SkyShift measures it in every image and plots its 0.75–5 µm spectrum and its brightness over time, with ice and gas features marked. |
-| **Hunt** | Scans for new point sources, moving tracklets and changes between visits, then checks them against 55,000+ known asteroids and comets (NASA/JPL orbits, computed offline). Save candidates as "finds" and export them. |
-| **Chase** | Follow a moving object (3I/ATLAS, Neptune, Pluto, Eris, Sedna, Ceres, comets… or any of 55,000 SBDB objects): the view re-centres on its predicted position in each image. |
+| **Hunt** | Scans for new point sources, moving tracklets and changes between visits. Every candidate is verified: a star-shape test, SPHEREx's own per-pixel quality flags (cosmic rays, hot pixels, ghosts, persistence), and aperture photometry across two or more bands for brightness changes. Survivors are matched against 55,000+ known asteroids and comets. Save finds and export them. |
+| **Chase** | Follow a moving object (3I/ATLAS, Neptune, Pluto, Eris, Sedna, Ceres, comets… or any of 55,000 SBDB objects): the view re-centres on its predicted position, corrected for SPHEREx's orbital parallax, in each image. |
 | **Live** | Your browser reads NASA's SPHEREx archive directly: newest observing periods and brand-new frames, "developed" on demand. |
 | **Mission** | Survey statistics, images per day, bands, data freshness, NASA SPHEREx news, NASA Image Library, upcoming asteroid close approaches. |
 | **Export & share** | PNG, animated GIF, video, FITS (with WCS), photometry CSV, JSON report, share links that reopen the exact view. |
@@ -26,16 +26,21 @@ It installs like an app on any phone, tablet or computer, and keeps working offl
 
 ```
  NASA/IPAC IRSA ──TAP──┐                         ┌── GitHub Pages (app + index)
- NASA/JPL SBDB/Horizons├─► GitHub Actions ───────┤
+ NASA/JPL SBDB/Horizons├─► GitHub Actions ───────┤   (incl. planet + SPHEREx orbit vectors)
  NASA Exoplanet Archive│   every 6 h, on GitHub's├── data branch ─► jsDelivr CDN mirror
  NASA.gov / Images API ┘   servers               └── keep-alive (no commits)
 
  NASA SPHEREx S3 archive (AWS Open Data) ──HTTP range requests──► each user's browser
 ```
 
-* **Pixels** are never copied: each visitor's browser streams only the bytes it needs
-  (a cutout of a 70 MB frame costs well under 1 MB) straight from NASA's public
-  `nasa-irsa-spherex` bucket, decoding FITS, TAN-SIP WCS and RICE-compressed quality flags in a Web Worker.
+* **Pixels** are never copied: each visitor's browser streams only the bytes it needs straight
+  from NASA's public `nasa-irsa-spherex` bucket. In the default *Auto* mode the first images
+  arrive as whole rows (instant), the rest as column-precise reads spread over five S3 hostnames:
+  about **0.12 MB per image instead of 0.65 MB** (a 70 MB frame), pixel-identical. FITS, TAN-SIP WCS
+  and RICE-compressed quality flags are decoded in a Web Worker.
+* **Known objects** are positioned by an N-body integration (Sun + 7 planets, JPL Horizons
+  planet states) from JPL SBDB orbits, seen from SPHEREx's own orbit (parallax): agreement with
+  JPL Horizons is **0.2–3″ for asteroids** and ~10″ for comets, below one 6.2″ SPHEREx pixel.
 * **The catalogue** of all SPHEREx frames is rebuilt from IRSA every 6 hours by a scheduled
   GitHub Actions job and packed into small sky tiles.
 * **Redundancy:** if any NASA service is down during a rebuild, the last good copy is restored

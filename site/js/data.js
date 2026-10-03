@@ -34,6 +34,10 @@ export function getJSON(name, opts) {
   return memo.get(name);
 }
 export const getMeta = () => getJSON('meta.json');
+export function getBin(name, opts) {
+  if (!memo.has(name)) memo.set(name, fetchAny(name, 'buffer', opts).catch(e => { memo.delete(name); throw e; }));
+  return memo.get(name);
+}
 
 // ---------------------------------------------------------------- tiles
 const MJD0 = 60780.0;

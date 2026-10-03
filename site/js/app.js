@@ -23,8 +23,8 @@ const FEATURED = [
   { name: 'Eagle Nebula (Pillars of Creation)', ra: 274.70, dec: -13.807, tag: 'Iconic nebula', info: 'Home of the famous Pillars of Creation.' },
   { name: 'Andromeda Galaxy (M31)', ra: 10.6847, dec: 41.2691, tag: 'Nearest big galaxy', info: 'Our giant neighbour, 2.5 million light-years away.' },
   { name: '30 Doradus (Tarantula)', ra: 84.6765, dec: -69.1009, tag: 'Monster nebula', info: 'The most active star factory in the Local Group, inside the Large Magellanic Cloud.' },
-  { name: 'Mira (ο Ceti)', ra: 34.83663, dec: -2.97764, tag: 'Variable star', info: 'A pulsating red giant that swells and dims over 332 days. Its brightness changes are easy to see.' },
-  { name: 'χ Cygni', ra: 297.6413, dec: 32.9143, tag: 'Variable star', info: 'A Mira variable with one of the largest brightness swings of any star.' },
+  { name: 'V1647 Ori (McNeil\'s Nebula)', ra: 86.54038, dec: -0.09946, tag: 'Outbursting young star', info: 'A newborn star that flares up by factors of 10 or more as it swallows gas from its disk, lighting up McNeil\'s Nebula. Compare visits to catch it changing.' },
+  { name: 'Herbig–Haro 1 & 2', ra: 84.0846, dec: -6.7514, tag: 'Jets from a newborn star', info: 'Glowing knots where jets from a young star slam into surrounding gas. Some knots visibly change over time.' },
   { name: 'Eta Carinae', ra: 161.2650, dec: -59.6845, tag: 'Unstable giant', info: 'A massive, eruptive double star wrapped in its own dust cloud.' },
   { name: 'Crab Nebula (M1)', ra: 83.6331, dec: 22.0145, tag: 'Supernova remnant', info: 'The debris of a star that exploded in 1054 AD, with a pulsar at its heart.' },
   { name: 'Boyajian\'s Star', ra: 301.5644, dec: 44.4569, tag: 'Mysterious dimming', info: 'Famous for unexplained, irregular dips in brightness.' },
@@ -38,6 +38,7 @@ const settings = {
   size: store.pref('size') ?? 64,
   max: store.pref('max') ?? (navigator.connection?.saveData ? 24 : 48),
   mask: store.pref('mask') ?? false,
+  mode: store.pref('mode') ?? 'auto',
   reduceMotion: store.pref('reduceMotion') ?? matchMedia('(prefers-reduced-motion: reduce)').matches,
   autoplay: true,
 };
@@ -576,15 +577,22 @@ function registerSW() {
 function setupSettings() {
   const d = $('#dlgSettings');
   $('#settingsBtn').onclick = () => {
-    $('#setSize').value = settings.size; $('#setMax').value = settings.max; $('#setMask').checked = settings.mask; $('#setMotion').checked = settings.reduceMotion;
-    const per = (settings.size * 1.45 * 2 + 6) * 2040 * 4 * (settings.mask ? 1.6 : 1);
-    $('#dataUse').textContent = `About ${fmtBytes(per)} per image, so roughly ${fmtBytes(per * Math.min(settings.max, 200))} for a full target. Images are cached so you only pay once.`;
+    $('#setSize').value = settings.size; $('#setMax').value = settings.max; $('#setMask').checked = settings.mask; $('#setMotion').checked = settings.reduceMotion; $('#setMode').value = settings.mode;
+    const est = () => {
+      const rows = +$('#setSize').value + 6, mode = $('#setMode').value;
+      const saverB = rows * (rows * 4 + 900), fastB = rows * 8160, n = Math.min(+$('#setMax').value, 200);
+      const avg = mode === 'saver' ? saverB : mode === 'fast' ? fastB : (Math.min(8, n) * fastB + Math.max(0, n - 8) * saverB) / n;
+      const per = 30000 + avg * ($('#setMask').checked ? 1.8 : 1);
+      $('#dataUse').textContent = `About ${fmtBytes(per)} per image, so roughly ${fmtBytes(per * Math.min(+$('#setMax').value, 200))} for a full target. Images are cached on this device, so you only download them once.`;
+    };
+    ['#setSize', '#setMode', '#setMask', '#setMax'].forEach(id => { $(id).onchange = est; });
+    est();
     d.showModal();
   };
   d.addEventListener('close', () => {
     const before = JSON.stringify([settings.size, settings.max, settings.mask]);
-    settings.size = +$('#setSize').value; settings.max = +$('#setMax').value; settings.mask = $('#setMask').checked; settings.reduceMotion = $('#setMotion').checked;
-    for (const k of ['size', 'max', 'mask', 'reduceMotion']) store.pref(k, settings[k]);
+    settings.size = +$('#setSize').value; settings.max = +$('#setMax').value; settings.mask = $('#setMask').checked; settings.reduceMotion = $('#setMotion').checked; settings.mode = $('#setMode').value;
+    for (const k of ['size', 'max', 'mask', 'reduceMotion', 'mode']) store.pref(k, settings[k]);
     if (before !== JSON.stringify([settings.size, settings.max, settings.mask]) && tmCurrent()) {
       const t = tmCurrent().target;
       toast('Settings saved. Reloading the current target.', 'ok');

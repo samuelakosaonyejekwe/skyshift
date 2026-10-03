@@ -11,13 +11,17 @@ self.onmessage = async ev => {
     jobs.set(m.job, ctl);
     const queue = m.frames.map((f, i) => [f, i]);
     const conc = m.concurrency || 4;
-    let done = 0;
+    let done = 0, started = 0;
     const run = async () => {
       while (queue.length && !ctl.signal.aborted) {
         const [f, i] = queue.shift();
         try {
           const target = m.targets ? m.targets[i] : m.target;
-          const r = await cutout(f, target, m.opts, ctl.signal);
+          // auto: first images over whole rows (appear instantly), the rest
+          // column-precise (a fraction of the data)
+          let mode = m.opts.mode;
+          if (mode === 'auto') mode = started++ < 8 ? 'fast' : 'saver';
+          const r = await cutout(f, target, { ...m.opts, mode }, ctl.signal);
           done++;
           if (r) self.postMessage({ job: m.job, type: 'frame', i, r, done }, [r.data.buffer]);
           else self.postMessage({ job: m.job, type: 'skip', i, done });
