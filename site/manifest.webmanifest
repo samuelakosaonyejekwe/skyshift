@@ -1,0 +1,31 @@
+{
+  "name": "SkyShift · SPHEREx Sky Time Machine",
+  "short_name": "SkyShift",
+  "description": "Watch the infrared sky change over time with real NASA SPHEREx images. Blink, compare, measure spectra and hunt moving objects. Works offline.",
+  "id": "./",
+  "start_url": "./#/explore",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#070a17",
+  "theme_color": "#070a17",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["education", "science", "utilities"],
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Time Machine: Orion Nebula", "url": "./#/tm?ra=83.8221&dec=-5.3911&name=Orion%20Nebula%20(M42)", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Chase 3I/ATLAS", "url": "./#/tm?mover=3i-atlas", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Live from SPHEREx", "url": "./#/live", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ],
+  "screenshots": [
+    { "src": "icons/screenshot-wide.png", "sizes": "1280x720", "type": "image/png", "form_factor": "wide", "label": "SkyShift sky map" },
+    { "src": "icons/screenshot-narrow.png", "sizes": "720x1280", "type": "image/png", "form_factor": "narrow", "label": "SkyShift on a phone" }
+  ]
+}

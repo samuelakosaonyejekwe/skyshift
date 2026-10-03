@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https://alasky.cds.unistra.fr https://images-assets.nasa.gov https://www.nasa.gov https://science.nasa.gov; connect-src 'self' https://nasa-irsa-spherex.s3.us-east-1.amazonaws.com https://cdn.jsdelivr.net https://raw.githubusercontent.com https://cds.unistra.fr https://images-api.nasa.gov https://www.nasa.gov https://alasky.cds.unistra.fr; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>SkyShift · SPHEREx Sky Time Machine</title>
+<meta name="description" content="Watch the infrared sky change over time with real NASA SPHEREx images. Blink, compare, measure spectra and hunt moving objects — free, installable, works offline.">
+<meta name="theme-color" content="#070a17" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)">
+<meta name="color-scheme" content="dark light">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SkyShift">
+<meta property="og:title" content="SkyShift · SPHEREx Sky Time Machine">
+<meta property="og:description" content="See how the infrared sky changes over time with NASA SPHEREx. Blink images, measure spectra, hunt moving objects.">
+<meta property="og:image" content="icons/og.png">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="css/app.css">
+<link rel="modulepreload" href="js/app.js">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="#/explore" aria-label="SkyShift home">
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><use href="#i-logo"/></svg>
+    <span class="brand-text"><b>SkyShift</b><small>SPHEREx Sky Time Machine</small></span>
+  </a>
+  <form class="search" id="searchForm" role="search" autocomplete="off">
+    <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="q" type="search" placeholder="Search: Orion Nebula, M31, 3I/ATLAS, Ceres, 83.8 -5.4…" aria-label="Search the sky by name or coordinates" enterkeyhint="search" spellcheck="false">
+    <div class="suggest" id="suggest" role="listbox" hidden></div>
+  </form>
+  <div class="top-actions">
+    <span class="net" id="netBadge" title="Connection status" hidden>Offline</span>
+    <button class="btn install" id="installBtn" type="button" title="Install SkyShift on this device">
+      <svg class="ic" aria-hidden="true"><use href="#i-download"/></svg><span>Install</span>
+    </button>
+    <button class="icon-btn" id="themeBtn" type="button" title="Switch light/dark theme" aria-label="Switch theme"><svg class="ic"><use href="#i-theme"/></svg></button>
+    <button class="icon-btn" id="settingsBtn" type="button" title="Settings" aria-label="Settings"><svg class="ic"><use href="#i-gear"/></svg></button>
+  </div>
+</header>
+
+<nav class="tabs" aria-label="Main">
+  <a href="#/explore" data-view="explore"><svg class="ic"><use href="#i-globe"/></svg><span>Explore</span></a>
+  <a href="#/tm" data-view="tm"><svg class="ic"><use href="#i-film"/></svg><span class="lbl-long">Time Machine</span><span class="lbl-short">Watch</span></a>
+  <a href="#/chase" data-view="chase"><svg class="ic"><use href="#i-comet"/></svg><span>Chase</span></a>
+  <a href="#/live" data-view="live"><svg class="ic"><use href="#i-live"/></svg><span>Live</span></a>
+  <a href="#/mission" data-view="mission"><svg class="ic"><use href="#i-chart"/></svg><span>Mission</span></a>
+  <a href="#/saved" data-view="saved"><svg class="ic"><use href="#i-star"/></svg><span>Saved</span></a>
+  <a href="#/learn" data-view="learn"><svg class="ic"><use href="#i-book"/></svg><span>Learn</span></a>
+</nav>
+
+<main id="main" tabindex="-1">
+
+<!-- ============================== EXPLORE ============================== -->
+<section class="view" id="view-explore" aria-labelledby="h-explore">
+  <div class="hero">
+    <div>
+      <h1 id="h-explore">See the infrared sky <em>change</em>.</h1>
+      <p class="lead">NASA's <strong>SPHEREx</strong> maps the whole sky every six months in 102 colours of infrared light. Pick any spot to flip through its images over time, like a flip-book of the sky. Moving or changing objects stand out: asteroids, comets, variable stars, maybe a planet nobody has found yet.</p>
+      <div class="hero-stats" id="heroStats" aria-live="polite"></div>
+    </div>
+  </div>
+  <div class="card map-card">
+    <div class="map-toolbar">
+      <div class="seg" role="radiogroup" aria-label="Map colouring">
+        <button type="button" class="on" data-mapmode="counts" role="radio" aria-checked="true">Times observed</button>
+        <button type="button" data-mapmode="recent" role="radio" aria-checked="false">Most recent</button>
+      </div>
+      <div class="chips" id="mapLayers" aria-label="Map layers">
+        <label><input type="checkbox" data-layer="targets" checked> Featured</label>
+        <label><input type="checkbox" data-layer="live" checked> Newest frames</label>
+        <label><input type="checkbox" data-layer="exo"> Exoplanet hosts</label>
+        <label><input type="checkbox" data-layer="galactic" checked> Milky Way</label>
+        <label><input type="checkbox" data-layer="ecliptic" checked> Ecliptic</label>
+        <label><input type="checkbox" data-layer="grid" checked> Grid</label>
+      </div>
+    </div>
+    <div class="map-wrap">
+      <canvas id="skymap" aria-label="All-sky map of SPHEREx coverage. Click anywhere to open that spot in the Time Machine." role="img"></canvas>
+      <div class="map-tip" id="mapTip" hidden></div>
+      <div class="map-legend" id="mapLegend"></div>
+      <div class="map-zoom"><button type="button" class="icon-btn" id="zoomIn" aria-label="Zoom in">+</button><button type="button" class="icon-btn" id="zoomOut" aria-label="Zoom out">−</button></div>
+    </div>
+    <p class="hint">Tap or click anywhere on the map to open that patch of sky. Scroll or pinch to zoom. <span class="legend-line gal"></span> Milky Way plane · <span class="legend-line ecl"></span> Ecliptic (where planets, asteroids and comets travel)</p>
+  </div>
+
+  <h2 class="section-title">Start here: famous places to watch</h2>
+  <div class="grid cards" id="featured"></div>
+  <h2 class="section-title">Chase a moving world</h2>
+  <div class="grid cards small" id="featuredMovers"></div>
+</section>
+
+<!-- ============================== TIME MACHINE ============================== -->
+<section class="view" id="view-tm" aria-labelledby="h-tm" hidden>
+  <div class="tm-empty" id="tmEmpty">
+    <h1 id="h-tm">Time Machine</h1>
+    <p>Choose a target to see every SPHEREx image of it, in order of time.</p>
+    <p><a class="btn primary" href="#/explore">Pick a spot on the sky map</a> or use the search box above.</p>
+  </div>
+  <div class="tm" id="tm" hidden>
+    <div class="tm-head">
+      <div class="tm-title">
+        <h1 id="tmName">Target</h1>
+        <p class="muted" id="tmCoords"></p>
+        <div class="badges" id="tmBadges"></div>
+      </div>
+      <div class="tm-actions">
+        <button class="btn" id="tmSave" type="button"><svg class="ic"><use href="#i-star"/></svg><span>Save offline</span></button>
+        <button class="btn" id="tmShare" type="button"><svg class="ic"><use href="#i-share"/></svg><span>Share</span></button>
+        <div class="menu-wrap">
+          <button class="btn" id="tmExportBtn" type="button" aria-haspopup="true" aria-expanded="false"><svg class="ic"><use href="#i-download"/></svg><span>Export</span></button>
+          <div class="menu" id="tmExport" hidden role="menu">
+            <button type="button" data-export="png" role="menuitem">Image (PNG)</button>
+            <button type="button" data-export="gif" role="menuitem">Animation (GIF)</button>
+            <button type="button" data-export="webm" role="menuitem">Video (WebM/MP4)</button>
+            <button type="button" data-export="fits" role="menuitem">Current frame (FITS)</button>
+            <button type="button" data-export="csv" role="menuitem">Measurements (CSV)</button>
+            <button type="button" data-export="json" role="menuitem">Full report (JSON)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tm-controls">
+      <div class="seg" id="tmModes" role="tablist" aria-label="View mode">
+        <button type="button" data-mode="movie" class="on" role="tab" title="Play all images in time order">▶ Movie</button>
+        <button type="button" data-mode="blink" role="tab" title="Flip between two dates, like the discovery of Pluto">Blink</button>
+        <button type="button" data-mode="diff" role="tab" title="Subtract two dates: anything that changed lights up">Difference</button>
+        <button type="button" data-mode="color" role="tab" title="False-colour infrared image of one visit">Colour</button>
+        <button type="button" data-mode="then" role="tab" title="Compare with NASA WISE/NEOWISE and 2MASS images from years ago">Then &amp; now</button>
+      </div>
+      <div class="chips" id="tmBands" aria-label="Wavelength bands"></div>
+    </div>
+
+    <div class="tm-body">
+      <div class="tm-stage-col">
+        <div class="stage" id="stage">
+          <canvas id="cv" width="96" height="96" aria-label="SPHEREx image"></canvas>
+          <canvas id="cv2" width="96" height="96" hidden aria-hidden="true"></canvas>
+          <img id="refImg" alt="" hidden crossorigin="anonymous">
+          <canvas id="ov" aria-hidden="true"></canvas>
+          <input type="range" id="swipe" min="0" max="100" value="50" aria-label="Compare slider" hidden>
+          <div class="hud tl" id="hudTL"></div>
+          <div class="hud tr" id="hudTR"></div>
+          <div class="hud bl" id="hudBL"></div>
+          <div class="hud br" id="hudBR"></div>
+          <div class="stage-msg" id="stageMsg" hidden></div>
+          <div class="progress" id="progress" hidden><div></div><span></span></div>
+        </div>
+        <div class="player" id="player">
+          <button class="icon-btn" id="pPrev" type="button" aria-label="Previous image" title="Previous (←)"><svg class="ic"><use href="#i-prev"/></svg></button>
+          <button class="icon-btn play" id="pPlay" type="button" aria-label="Play" title="Play/pause (space)"><svg class="ic"><use href="#i-play"/></svg></button>
+          <button class="icon-btn" id="pNext" type="button" aria-label="Next image" title="Next (→)"><svg class="ic"><use href="#i-next"/></svg></button>
+          <input type="range" id="pScrub" min="0" max="0" value="0" aria-label="Choose image">
+          <label class="speed" title="Speed">⏱ <input type="range" id="pSpeed" min="1" max="12" value="4" aria-label="Playback speed"></label>
+        </div>
+        <div class="timeline" id="timeline" aria-label="Timeline of observations"></div>
+        <div class="blink-pick" id="blinkPick" hidden>
+          <label>A <select id="selA"></select></label>
+          <label>B <select id="selB"></select></label>
+          <label class="inline"><input type="checkbox" id="swipeMode"> Swipe instead of blink</label>
+        </div>
+        <div class="view-opts">
+          <label>Stretch <select id="optStretch"><option value="asinh">asinh</option><option value="sqrt">sqrt</option><option value="log">log</option><option value="linear">linear</option></select></label>
+          <label>Colours <select id="optCmap"></select></label>
+          <label class="inline"><input type="checkbox" id="optBg" checked> Remove background glow</label>
+          <label class="inline"><input type="checkbox" id="optKnown" checked> Label known asteroids &amp; comets</label>
+          <label class="inline"><input type="checkbox" id="optGrid"> Crosshair &amp; scale</label>
+          <label class="inline"><input type="checkbox" id="optSmooth"> Smooth pixels</label>
+        </div>
+      </div>
+
+      <aside class="tm-side">
+        <div class="seg small" role="tablist" id="sideTabs">
+          <button type="button" class="on" data-side="info" role="tab">Info</button>
+          <button type="button" data-side="measure" role="tab">Spectrum &amp; light curve</button>
+          <button type="button" data-side="hunt" role="tab">Hunt</button>
+          <button type="button" data-side="frames" role="tab">Frames</button>
+        </div>
+        <div class="side-pane" data-pane="info">
+          <div id="frameInfo" class="kv"></div>
+          <div id="targetInfo"></div>
+          <div class="note" id="loadNote"></div>
+          <button class="btn" type="button" id="loadMore" hidden>Load more images</button>
+        </div>
+        <div class="side-pane" data-pane="measure" hidden>
+          <p class="muted small">Brightness inside a small circle at the <b>crosshair</b> (tap the image to move it). SPHEREx sees each spot at many wavelengths. Together they build a <b>spectrum</b>, the object's colour fingerprint.</p>
+          <h3>Spectrum</h3>
+          <div id="specChart" class="chart-host"></div>
+          <h3>Light curve</h3>
+          <div id="lcChart" class="chart-host"></div>
+          <div id="measureStats" class="muted small"></div>
+        </div>
+        <div class="side-pane" data-pane="hunt" hidden>
+          <p class="muted small">Scan these images for things that <b>move</b> or <b>change</b>. Known asteroids and comets are matched automatically against NASA/JPL orbits. Anything left over is a candidate worth checking.</p>
+          <button class="btn primary" id="huntBtn" type="button"><svg class="ic"><use href="#i-search"/></svg> Scan for movers &amp; changes</button>
+          <div id="huntOut"></div>
+          <h3>Known objects in view</h3>
+          <div id="knownList" class="list"></div>
+        </div>
+        <div class="side-pane" data-pane="frames" hidden>
+          <div id="frameGrid" class="frame-grid"></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== CHASE ============================== -->
+<section class="view" id="view-chase" aria-labelledby="h-chase" hidden>
+  <h1 id="h-chase">Chase a moving object</h1>
+  <p class="lead">Planets, dwarf planets, asteroids and comets drift against the stars. SkyShift uses NASA/JPL orbits to find every SPHEREx image that caught them, then plays them back <b>following the object</b>.</p>
+  <form class="search inline-search" id="chaseForm" autocomplete="off">
+    <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="chaseQ" type="search" placeholder="Any of 55,000+ asteroids & comets: Juno, Hygiea, 12P, Halley…" aria-label="Search asteroids and comets">
+    <div class="suggest" id="chaseSuggest" role="listbox" hidden></div>
+  </form>
+  <div class="grid cards small" id="moverCards"></div>
+</section>
+
+<!-- ============================== LIVE ============================== -->
+<section class="view" id="view-live" aria-labelledby="h-live" hidden>
+  <h1 id="h-live">Live from SPHEREx</h1>
+  <p class="lead">Read straight from NASA's public SPHEREx archive (IRSA on AWS) by <b>your own browser</b>, right now. No middleman. New observations arrive every week.</p>
+  <div class="grid stats" id="liveStats"></div>
+  <div class="card">
+    <div class="row-between"><h2>Newest observing periods in the archive</h2><button class="btn" id="liveRefresh" type="button">↻ Refresh</button></div>
+    <div id="livePeriods" class="list"></div>
+  </div>
+  <div class="card">
+    <div class="row-between"><h2>Latest frames</h2><span class="muted small" id="liveNote"></span></div>
+    <p class="muted small">Tap <b>Develop</b> to pull the centre of a brand-new frame from the archive (~2&nbsp;MB) and see where on the sky it was taken.</p>
+    <div id="liveFrames" class="live-grid"></div>
+  </div>
+</section>
+
+<!-- ============================== MISSION ============================== -->
+<section class="view" id="view-mission" aria-labelledby="h-mission" hidden>
+  <h1 id="h-mission">The SPHEREx mission, in numbers</h1>
+  <div class="grid stats" id="missionStats"></div>
+  <div class="card"><h2>Images taken per day</h2><div id="perDay" class="chart-host"></div></div>
+  <div class="grid two">
+    <div class="card"><h2>102 colours of infrared, in 6 detector bands</h2><div id="bandInfo"></div></div>
+    <div class="card"><h2>Data freshness</h2><div id="dataStatus"></div></div>
+  </div>
+  <div class="card"><div class="row-between"><h2>SPHEREx news from NASA</h2><span class="muted small" id="newsSrc"></span></div><div id="news" class="news"></div></div>
+  <div class="card"><div class="row-between"><h2>NASA Image Library: SPHEREx</h2><span class="muted small" id="imgSrc"></span></div><div id="gallery" class="gallery"></div></div>
+  <div class="card"><h2>Asteroids passing close to Earth (next 90 days, NASA/JPL CNEOS)</h2><div id="cad" class="table-wrap"></div></div>
+</section>
+
+<!-- ============================== SAVED ============================== -->
+<section class="view" id="view-saved" aria-labelledby="h-saved" hidden>
+  <h1 id="h-saved">Saved &amp; offline</h1>
+  <p class="lead">Targets you save are stored on this device and open even in airplane mode.</p>
+  <div class="card"><h2>Saved targets</h2><div id="savedList" class="list"></div></div>
+  <div class="card"><h2>My finds</h2><p class="muted small">Candidates you flagged while hunting. Export them to share with astronomers.</p><div id="findsList" class="list"></div>
+    <div class="row"><button class="btn" id="findsExport" type="button">Export finds (CSV)</button></div></div>
+  <div class="card"><h2>Storage on this device</h2><div id="storageInfo"></div>
+    <div class="row"><button class="btn" id="persistBtn" type="button">Keep data even when space is low</button><button class="btn danger" id="clearCache" type="button">Clear cached images</button></div></div>
+</section>
+
+<!-- ============================== LEARN ============================== -->
+<section class="view prose" id="view-learn" aria-labelledby="h-learn" hidden>
+  <h1 id="h-learn">How SkyShift works</h1>
+  <div class="grid two">
+    <div class="card">
+      <h2>1 · Pick a place</h2>
+      <p>Click the sky map, choose a featured target, or search for a name (stars, galaxies, nebulae, planets, asteroids, comets) or coordinates (<code>83.82 -5.39</code>, <code>05:35:17 -05:23:28</code>, or galactic <code>l=0 b=0</code>).</p>
+      <h2>2 · Watch it change</h2>
+      <p><b>Movie</b> plays every image in time order. <b>Blink</b> flips between two dates, the same trick Clyde Tombaugh used to find Pluto in 1930. <b>Difference</b> subtracts them so only changes light up. <b>Colour</b> turns infrared into a false-colour picture. <b>Then &amp; now</b> compares with NASA's WISE/NEOWISE (2010–2024) and 2MASS (1997–2001) skies.</p>
+      <h2>3 · Measure &amp; hunt</h2>
+      <p>The <b>Spectrum</b> chart shows how bright the object is at each infrared wavelength: water ice, carbon dioxide and dust leave fingerprints here. The <b>Hunt</b> tool looks for anything that moved or changed and checks it against 55,000+ known asteroids and comets from NASA/JPL.</p>
+    </div>
+    <div class="card">
+      <h2>What is SPHEREx?</h2>
+      <p>The Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer is a NASA space telescope launched in March 2025. Every six months it maps the <b>entire sky</b> in 102 near-infrared colours (0.75–5&nbsp;µm). Each image covers 3.5°×3.5° (about 7 full Moons across) with 6.2″ pixels.</p>
+      <p>Its special filters (linear variable filters) change colour across the detector, so as the telescope steps across the sky each star is photographed in many colours. Put together, they give a spectrum of <b>every</b> object, more than a billion of them.</p>
+      <h2>Why "Planet X"?</h2>
+      <p>Anything in our Solar System shifts position between images taken days or months apart. Nearby stars and brown dwarfs creep too. A cold, distant planet would be faint in visible light but could glow in the infrared, which is exactly what SPHEREx sees.</p>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Tips for spotting real changes</h2>
+    <ul class="ticks">
+      <li><b>Compare like with like.</b> Choose one band (e.g. band 3) so the colour is similar between dates.</li>
+      <li><b>Asteroids move fast</b>, usually appearing in only one image of a visit. Slow, distant objects (Kuiper Belt) shift a few pixels per day.</li>
+      <li><b>Cosmic rays and hot pixels</b> are single sharp dots. SkyShift masks most of them using SPHEREx's quality flags.</li>
+      <li><b>Bright stars</b> leave ghosts and halos. A real object looks like a star (same fuzzy shape) and moves in a straight line.</li>
+      <li><b>Check the Hunt list</b>. If it says "Known", that's an asteroid or comet already catalogued by NASA/JPL.</li>
+    </ul>
+  </div>
+  <div class="grid two">
+    <div class="card" id="installHelp">
+      <h2>Install on any device</h2>
+      <p><b>Android (Chrome, Edge, Samsung Internet):</b> tap <b>Install</b> at the top, or browser menu ⋮ → <i>Install app</i> / <i>Add to Home screen</i>.</p>
+      <p><b>iPhone &amp; iPad (Safari):</b> tap Share <span aria-hidden="true">⬆︎</span> → <i>Add to Home Screen</i>.</p>
+      <p><b>Windows, Mac, Linux, ChromeOS (Chrome/Edge):</b> click <b>Install</b> at the top or the install icon in the address bar. <b>Safari on Mac:</b> File → <i>Add to Dock</i>.</p>
+      <p><b>Offline / airplane mode:</b> once opened, the app itself works without a connection. Use <b>Save offline</b> on any target to keep its images on your device.</p>
+    </div>
+    <div class="card">
+      <h2>Where the data comes from</h2>
+      <ul class="ticks">
+        <li><b>SPHEREx images</b>: NASA/IPAC Infrared Science Archive (IRSA), read live from its public AWS bucket by your browser.</li>
+        <li><b>SPHEREx image catalogue</b>: IRSA TAP service, re-indexed automatically every 6 hours.</li>
+        <li><b>Asteroid &amp; comet orbits, ephemerides, close approaches</b>: NASA/JPL Solar System Dynamics (SBDB, Horizons, CNEOS).</li>
+        <li><b>Exoplanet hosts</b>: NASA Exoplanet Archive.</li>
+        <li><b>News &amp; images</b>: NASA.gov and the NASA Image and Video Library.</li>
+        <li><b>Then &amp; now</b>: NASA WISE/NEOWISE (unWISE) and 2MASS sky surveys via CDS HiPS. Name lookup: CDS Sesame.</li>
+      </ul>
+      <p class="small muted">This publication makes use of data products from the Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer (SPHEREx), which is a joint project of the Jet Propulsion Laboratory and the California Institute of Technology, and is funded by the National Aeronautics and Space Administration. SPHEREx data DOI: <a href="https://www.ipac.caltech.edu/doi/irsa/10.26131/IRSA652" rel="noopener" target="_blank">10.26131/IRSA652</a>. SkyShift is an independent project and is not endorsed by NASA.</p>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Keyboard shortcuts</h2>
+    <div class="kbd-grid">
+      <span><kbd>Space</kbd> play / pause</span><span><kbd>←</kbd> <kbd>→</kbd> previous / next</span><span><kbd>B</kbd> blink</span><span><kbd>D</kbd> difference</span><span><kbd>M</kbd> movie</span><span><kbd>C</kbd> colour</span><span><kbd>1</kbd>–<kbd>6</kbd> band</span><span><kbd>0</kbd> all bands</span><span><kbd>/</kbd> search</span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Privacy</h2>
+    <p>No accounts, no cookies, no tracking, no ads. Everything you save stays on your device.</p>
+  </div>
+  <p class="center"><button class="btn" id="replayTour" type="button">Show the quick tour again</button></p>
+</section>
+</main>
+
+<footer class="foot">
+  <span>SkyShift · Data: NASA SPHEREx (IRSA/Caltech-IPAC), NASA/JPL, NASA Exoplanet Archive · <span id="buildInfo"></span></span>
+  <a href="https://github.com/samuelakosaonyejekwe/skyshift" rel="noopener" target="_blank">Source code</a>
+</footer>
+
+<!-- dialogs -->
+<dialog id="dlgSettings" aria-labelledby="dlgSettingsH">
+  <form method="dialog" class="dlg">
+    <h2 id="dlgSettingsH">Settings</h2>
+    <label>Image size <select id="setSize"><option value="48">Small: 5′ (fastest)</option><option value="64">Medium: 6.5′</option><option value="96">Large: 10′</option><option value="128">Huge: 13′ (more data)</option></select></label>
+    <label>Images per target <select id="setMax"><option value="24">24 (data saver)</option><option value="48">48</option><option value="96">96</option><option value="200">200</option><option value="100000">All</option></select></label>
+    <label class="inline"><input type="checkbox" id="setMask"> Remove bad pixels using SPHEREx quality flags (uses ~50% more data)</label>
+    <label class="inline"><input type="checkbox" id="setMotion"> Reduce motion (no auto-play)</label>
+    <p class="muted small" id="dataUse"></p>
+    <div class="row end"><button class="btn primary" value="ok">Done</button></div>
+  </form>
+</dialog>
+<dialog id="dlgInstall" aria-labelledby="dlgInstallH">
+  <form method="dialog" class="dlg">
+    <h2 id="dlgInstallH">Install SkyShift</h2>
+    <div id="installSteps"></div>
+    <div class="row end"><button class="btn primary" value="ok">Got it</button></div>
+  </form>
+</dialog>
+<dialog id="dlgTour" aria-labelledby="dlgTourH">
+  <form method="dialog" class="dlg tour">
+    <div class="tour-step" data-step="0">
+      <h2 id="dlgTourH">Welcome to SkyShift 🔭</h2>
+      <p>NASA's SPHEREx telescope photographs the entire sky over and over in infrared light. SkyShift lets <b>you</b> flip through those pictures to see what moves and changes.</p>
+    </div>
+    <div class="tour-step" data-step="1" hidden>
+      <h2>1. Choose a spot</h2>
+      <p>Click the glowing sky map or pick a featured target like the Orion Nebula or comet 3I/ATLAS, a visitor from another star.</p>
+    </div>
+    <div class="tour-step" data-step="2" hidden>
+      <h2>2. Press play</h2>
+      <p>Watch the images in order. Use <b>Blink</b> and <b>Difference</b> to make changes pop, and <b>Hunt</b> to scan for moving objects automatically.</p>
+    </div>
+    <div class="tour-step" data-step="3" hidden>
+      <h2>3. Take it anywhere</h2>
+      <p>Tap <b>Install</b> to put SkyShift on your phone or computer. Saved targets work offline, even in airplane mode.</p>
+    </div>
+    <div class="row between"><button class="btn" value="skip" type="submit">Skip</button><span class="dots" id="tourDots"></span><button class="btn primary" id="tourNext" type="button">Next</button></div>
+  </form>
+</dialog>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<noscript><div class="noscript">SkyShift needs JavaScript to read SPHEREx images. Please enable it.</div></noscript>
+
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="i-logo" viewBox="0 0 64 64"><defs><radialGradient id="lg" cx="40%" cy="35%"><stop offset="0" stop-color="#ffe08a"/><stop offset=".55" stop-color="#ff7a45"/><stop offset="1" stop-color="#7b2cff"/></radialGradient></defs><circle cx="32" cy="32" r="30" fill="#0b1030"/><circle cx="32" cy="32" r="13" fill="url(#lg)"/><path d="M8 40c10-6 38-22 48-24" stroke="#7fd8ff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-dasharray="3 4"/><circle cx="50" cy="18" r="3" fill="#7fd8ff"/><circle cx="14" cy="16" r="1.4" fill="#fff"/><circle cx="48" cy="48" r="1.2" fill="#fff"/><circle cx="20" cy="50" r="1" fill="#fff"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-theme" viewBox="0 0 24 24"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z" fill="currentColor"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm9 4-2.1-.7a7 7 0 0 0-.6-1.5l1-2-1.6-1.6-2 1a7 7 0 0 0-1.5-.6L13.5 3h-3l-.7 2.1a7 7 0 0 0-1.5.6l-2-1L4.7 6.3l1 2a7 7 0 0 0-.6 1.5L3 10.5v3l2.1.7c.1.5.3 1 .6 1.5l-1 2 1.6 1.6 2-1c.5.3 1 .5 1.5.6l.7 2.1h3l.7-2.1c.5-.1 1-.3 1.5-.6l2 1 1.6-1.6-1-2c.3-.5.5-1 .6-1.5l2.1-.7z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="6" fill="none" stroke="currentColor" stroke-width="1.8"/><ellipse cx="12" cy="12" rx="4" ry="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2 12h20" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m10 9 5 3-5 3z" fill="currentColor"/></symbol>
+  <symbol id="i-comet" viewBox="0 0 24 24"><circle cx="17" cy="7" r="3" fill="currentColor"/><path d="M15 9 4 20M14 7 5 14M17 10l-6 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" opacity=".7"/></symbol>
+  <symbol id="i-live" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/><path d="M7 7a7 7 0 0 0 0 10M17 7a7 7 0 0 1 0 10M4 4a11 11 0 0 0 0 16M20 4a11 11 0 0 1 0 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zm0 0v16" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5" fill="currentColor"/><circle cx="6" cy="12" r="2.5" fill="currentColor"/><circle cx="18" cy="19" r="2.5" fill="currentColor"/><path d="m8 11 8-5M8 13l8 5" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M6 5v14M19 5 9 12l10 7z" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M18 5v14M5 5l10 7-10 7z" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4v16l13-8z" fill="currentColor"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></symbol>
+</svg>
+</body>
+</html>

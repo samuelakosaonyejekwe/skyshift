@@ -1,0 +1,91 @@
+name: Refresh NASA data & deploy
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 0 * * *"       # daily: also refreshes the CDN mirror
+    - cron: "17 6,12,18 * * *" # every 6 hours: fresh SPHEREx index
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  actions: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pull fresh NASA data (IRSA SPHEREx, JPL, Exoplanet Archive, NASA.gov)
+        env:
+          # if an upstream service is down, the last good copy is restored from
+          # the live site, then from the CDN mirror of the data branch
+          SKYSHIFT_PREVIOUS: >-
+            ${{ env.SITE_URL }}/data/
+            https://cdn.jsdelivr.net/gh/${{ github.repository }}@data/
+            https://raw.githubusercontent.com/${{ github.repository }}/data/
+        run: python3 tools/build_data.py site/data
+
+      - name: Stamp app version (changes only when app code changes)
+        run: |
+          v=$(find site -path site/data -prune -o -type f -print | sort | xargs sha1sum | sha1sum | cut -c1-12)
+          sed -i "s/__BUILD__/$v/" site/sw.js
+          touch site/.nojekyll
+          echo "App version $v"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Mirror small data files to the `data` branch (CDN redundancy)
+        if: github.event_name != 'schedule' || github.event.schedule == '17 0 * * *'
+        run: |
+          set -e
+          tmp=$(mktemp -d)
+          cp site/data/*.json "$tmp"/
+          cd "$tmp"
+          git init -q -b data
+          git config user.name "${{ github.repository_owner }}"
+          git config user.email "${{ github.repository_owner_id }}+${{ github.repository_owner }}@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Data snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" data
+          curl -s -o /dev/null "https://purge.jsdelivr.net/gh/${{ github.repository }}@data/meta.json" || true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  keepalive:
+    # GitHub pauses scheduled workflows after 60 days without repository
+    # activity; re-enabling through the API keeps the refresh running forever
+    # without making any commits.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/deploy.yml/enable"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
