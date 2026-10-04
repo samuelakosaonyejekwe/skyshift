@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "io.github.samuelakosaonyejekwe.skyshift",
+      "sha256_cert_fingerprints": ["2A:B2:92:F2:B1:A7:BA:3E:F0:3A:4A:3B:DA:0B:2B:48:06:28:D6:F5:EC:D3:FF:F0:97:72:11:B9:45:1C:A5:07"]
+    }
+  }
+]

@@ -47,6 +47,12 @@ jobs:
             https://raw.githubusercontent.com/${{ github.repository }}/data/
         run: python3 tools/build_data.py site/data
 
+      - name: Include the Android app download
+        run: |
+          mkdir -p site/download
+          git fetch -q origin app:app 2>/dev/null && git show app:skyshift.apk > site/download/skyshift.apk && git show app:skyshift.apk.sha256 > site/download/skyshift.apk.sha256 \
+            && ls -la site/download || echo "No Android app build yet"
+
       - name: Minify app code for fast loading
         run: |
           npx --yes esbuild@0.23.1 site/js/*.js --minify --outdir=site/js --allow-overwrite --log-level=warning
