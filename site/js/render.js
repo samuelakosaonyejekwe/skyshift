@@ -223,3 +223,40 @@ export function findPeaks(data, size, nsig = 5, maxN = 40, edge = 4) {
   peaks.sort((a, b) => b.snr - a.snr);
   return peaks.slice(0, maxN);
 }
+
+// High-quality upscale for display (Catmull-Rom bicubic).  Makes point sources
+// look round instead of square without inventing detail.  NaN-safe.
+export function upsample(data, n, f = 4) {
+  const m = n * f, out = new Float32Array(m * m);
+  const at = (x, y) => {
+    x = x < 0 ? 0 : x >= n ? n - 1 : x; y = y < 0 ? 0 : y >= n ? n - 1 : y;
+    const v = data[y * n + x];
+    return Number.isFinite(v) ? v : NaN;
+  };
+  const w = t => {
+    const a = Math.abs(t);
+    return a < 1 ? 1.5 * a * a * a - 2.5 * a * a + 1 : a < 2 ? -0.5 * a * a * a + 2.5 * a * a - 4 * a + 2 : 0;
+  };
+  const wx = new Float32Array(f * 4), ox = new Int32Array(f);
+  for (let k = 0; k < f; k++) {
+    const sx = (k + 0.5) / f - 0.5, ix = Math.floor(sx), fx = sx - ix;
+    ox[k] = ix;
+    for (let t = 0; t < 4; t++) wx[k * 4 + t] = w(fx - (t - 1));
+  }
+  for (let Y = 0; Y < m; Y++) {
+    const ky = Y % f, iy = Math.floor(Y / f) + ox[ky];
+    for (let X = 0; X < m; X++) {
+      const kx = X % f, ix = Math.floor(X / f) + ox[kx];
+      let s = 0, ws = 0;
+      for (let j = 0; j < 4; j++) {
+        const wyv = wx[ky * 4 + j];
+        for (let i = 0; i < 4; i++) {
+          const v = at(ix + i - 1, iy + j - 1);
+          if (Number.isFinite(v)) { const ww = wyv * wx[kx * 4 + i]; s += v * ww; ws += ww; }
+        }
+      }
+      out[Y * m + X] = ws > 0.2 ? s / ws : NaN;
+    }
+  }
+  return out;
+}

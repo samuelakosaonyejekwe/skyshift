@@ -539,12 +539,14 @@ export function render() {
   const vis = visible();
   const N = size();
   const cv = $('#cv'), cv2 = $('#cv2'), ref = $('#refImg');
-  cv.width = cv.height = N; cv2.width = cv2.height = N;
+  const smooth = $('#optSmooth').checked, F = smooth ? 4 : 1, M = N * F;
+  cv.width = cv.height = M; cv2.width = cv2.height = M;
   const c = cv.getContext('2d'), c2 = cv2.getContext('2d');
+  const up = d => (F > 1 ? R.upsample(d, N, F) : d);
   const stretch = $('#optStretch').value, cmap = $('#optCmap').value;
   const swipe = $('#swipe');
   cv2.hidden = true; ref.hidden = true; swipe.hidden = true;
-  $('#stage').classList.toggle('smooth', $('#optSmooth').checked);
+  $('#stage').classList.toggle('smooth', smooth);
   if (!vis.length) {
     if (S.items.length) setMsg('No images in the selected bands yet. Choose another band.');
     clearCanvas();
@@ -554,7 +556,7 @@ export function render() {
   const hud = (tl, tr, bl, br) => { $('#hudTL').textContent = tl || ''; $('#hudTR').textContent = tr || ''; $('#hudBL').textContent = bl || ''; $('#hudBR').textContent = br || ''; };
   const drawMono = (ctx2, data, lv) => {
     const l = lv || R.levels(data, 'auto', [1.5, 99.7]);
-    R.paint(ctx2, N, R.scaleTo8(data, { lo: l.lo, hi: l.hi, stretch }), cmap);
+    R.paint(ctx2, M, R.scaleTo8(up(data), { lo: l.lo, hi: l.hi, stretch }), cmap);
   };
   const scaleBar = `${(N * 6.15 / 60).toFixed(1)}′ across`;
 
@@ -609,7 +611,7 @@ export function render() {
       else for (let i = 0; i < d.length; i++) d[i] = B.data[i] - A.data[i];
     } else for (let i = 0; i < d.length; i++) d[i] = B.data[i] - A.data[i];
     const { sig } = R.robustStats(d);
-    R.paintDiverging(c, N, d, 7 * sig);
+    R.paintDiverging(c, M, up(d), 7 * sig);
     S.diff = d;
     hud('B − A difference', 'orange = brighter in B · blue = brighter in A', `A: ${A.label}`, `B: ${B.label}`);
     drawOverlay(null, { diff: true });
@@ -620,8 +622,8 @@ export function render() {
     const bl = ch([1, 2]) || ch([1, 2, 3]), gr = ch([3, 4]) || ch([2, 3, 4]), rd = ch([5, 6]) || ch([4, 5, 6]);
     const chans = [rd, gr, bl].map(x => x || bl || gr || rd);
     if (!chans[0]) return;
-    const to8 = d => { const l = R.levels(d, 'auto', [2, 99.6]); return R.scaleTo8(d, { lo: l.lo, hi: l.hi, stretch }); };
-    R.paintRGB(c, N, to8(chans[0]), to8(chans[1]), to8(chans[2]));
+    const to8 = d => { const l = R.levels(d, 'auto', [2, 99.6]); return R.scaleTo8(up(d), { lo: l.lo, hi: l.hi, stretch }); };
+    R.paintRGB(c, M, to8(chans[0]), to8(chans[1]), to8(chans[2]));
     hud('False colour infrared', 'blue 0.75–1.6 µm · green 1.6–3.8 µm · red 3.8–5 µm', v === 'all' ? 'All visits' : visitLabel(+v.slice(1)), scaleBar);
     drawOverlay(null, {});
   } else if (S.mode === 'then') {
@@ -1447,6 +1449,7 @@ function bindUI() {
   R.COLORMAPS.forEach(c => $('#optCmap').append(h('option', { value: c, text: c })));
   $('#optCmap').value = store.pref('cmap') || 'inferno';
   $('#optStretch').value = store.pref('stretch') || 'asinh';
+  $('#optSmooth').checked = store.pref('smooth') ?? true;
   $('#tmModes').addEventListener('click', e => { const b = e.target.closest('button[data-mode]'); if (b) { setMode(b.dataset.mode); if (b.dataset.mode === 'blink' && !$('#swipeMode').checked) play(); } });
   $('#pPlay').onclick = () => (S && S.playing ? stop() : play());
   $('#pPrev').onclick = () => step(-1);
@@ -1454,7 +1457,7 @@ function bindUI() {
   $('#pScrub').oninput = e => { if (!S) return; stop(); if (S.mode !== 'movie') setMode('movie'); S.cur = +e.target.value; render(); };
   for (const id of ['#optStretch', '#optCmap', '#optBg', '#optSmooth', '#optGrid']) {
     $(id).addEventListener('change', () => {
-      store.pref('cmap', $('#optCmap').value); store.pref('stretch', $('#optStretch').value);
+      store.pref('cmap', $('#optCmap').value); store.pref('stretch', $('#optStretch').value); store.pref('smooth', $('#optSmooth').checked);
       if (!S) return;
       if (id === '#optBg') { S.cache.clear(); S.comp.clear(); }
       render(); renderFrameGrid();
