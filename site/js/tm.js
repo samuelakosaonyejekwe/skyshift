@@ -75,6 +75,33 @@ function refImage(sv, tg, N) {
   return refCache.get(key);
 }
 
+// Pre-built packs (tools/packs.py): featured targets open with one download
+const HALF = new Float32Array(65536);
+for (let h = 0; h < 65536; h++) {
+  const e = (h >> 10) & 31, m = h & 1023, sg = h >> 15 ? -1 : 1;
+  HALF[h] = e === 0 ? sg * m * 2 ** -24 : e === 31 ? (m ? NaN : sg * Infinity) : sg * (1 + m / 1024) * 2 ** (e - 15);
+}
+async function loadPack(key) {
+  if (ctx.settings.size !== 64 || ctx.settings.mask) return null;
+  try {
+    const buf = await getBin(`packs/${key}.bin`, { timeout: 12000 });
+    const dv = new DataView(buf);
+    if (String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)) !== 'SXP2') return null;
+    const n = dv.getUint32(4, true);
+    const js = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, n)));
+    const N = js.size, u16 = new Uint16Array(buf, 8 + n);
+    const map = new Map();
+    js.items.forEach((it, k) => {
+      const data = new Float32Array(N * N);
+      for (let i = 0; i < N * N; i++) data[i] = HALF[u16[k * N * N + i]];
+      it.r.data = data;
+      it.f.mjd = it.f.mjd ?? it.r.mjd;
+      map.set(frameKey(it.f), it);
+    });
+    return map;
+  } catch { return null; }
+}
+
 // JPL Horizons planet states + SPHEREx orbit for arcsecond-level positions
 let ephemP = null;
 function loadEphem() {
@@ -94,6 +121,8 @@ export async function openTarget(t) {
     // frames whose centre is within the inscribed radius are certainly usable
     frames.forEach(f => { f.pri = f.sep < 1.70 ? 0 : 1; });
     S.frames = frames;
+    S.pack = await loadPack(`f_${target.ra.toFixed(4)}_${target.dec.toFixed(4)}`);
+    if (S.target !== target) return;
     afterFrames();
   } catch (e) {
     setMsg('Could not load the SPHEREx index. ' + (navigator.onLine ? 'Please try again.' : 'You are offline. Saved targets still work.'));
@@ -130,6 +159,8 @@ export async function openMover(m) {
     const mid = frames[Math.floor(frames.length / 2)];
     target.ra = mid.tra; target.dec = mid.tdec;
     S.frames = frames;
+    if (m.id) S.pack = await loadPack(`m_${m.id}`);
+    if (S.target !== target) return;
     afterFrames();
   } catch (e) {
     console.error(e);
@@ -251,7 +282,11 @@ function afterFrames() {
     return;
   }
   const max = ctx.settings.max;
-  S.chosen = chooseFrames(all, max);
+  if (S.pack && S.pack.size) {
+    // instant start: the pre-built images, then "Load more" streams the rest
+    const byKey = new Map(all.map(f => [frameKey(f), f]));
+    S.chosen = [...S.pack.values()].map(it => byKey.get(frameKey(it.f)) || it.f);
+  } else S.chosen = chooseFrames(all, max);
   S.visitsAll = visitsOf(all);
   renderBadges();
   renderTargetInfo();
@@ -289,6 +324,8 @@ async function loadFrames(list) {
   // 1) offline cache
   const todo = [], todoT = [];
   await Promise.all(list.map(async (f, i) => {
+    const pk = sess.pack && sess.pack.get(frameKey(f));
+    if (pk) { addItem(f, pk.r, pk.tgt, 'pack'); sess.pending--; return; }
     const c = await store.get('cutouts', cacheKey(f, targets[i], o));
     if (sess !== S) return;
     if (c && c.data) { addItem(f, c, targets[i], true); sess.pending--; } else { todo.push(f); todoT.push(targets[i]); }
@@ -401,8 +438,8 @@ function finishLoading() {
     setMsg(S.errors ? 'Could not reach NASA\'s SPHEREx archive. Check your connection and try again.' : 'This position falls in gaps between SPHEREx detectors in the loaded images. Try nearby coordinates or load more images.');
   }
   updateSaveBtn();
-  if ($('#optKnown').checked) computeKnown();
-  measureAll();
+  if ($('#optKnown').checked) setTimeout(computeKnown, 400);
+  setTimeout(measureAll, 150);
   if (ctx.settings.autoplay && S.mode === 'movie' && visible().length > 2 && !S.playing && !ctx.settings.reduceMotion) play();
 }
 
@@ -671,7 +708,7 @@ function renderFrameInfo(it) {
   row('Pixel in frame', `x ${r.x.toFixed(1)}, y ${r.y.toFixed(1)}`);
   if (it.tgt && S.target.kind === 'mover') row('Object position', `${it.tgt.ra.toFixed(4)}°, ${it.tgt.dec.toFixed(4)}°`);
   row('Full image', 'Download FITS (≈70 MB) from NASA', S3 + frameKey(f));
-  row('Source', it.cached ? 'This device (offline copy)' : 'NASA IRSA archive (live)');
+  row('Source', it.cached === 'pack' ? 'NASA IRSA archive, pre-cut by SkyShift (refreshed every 6 h)' : it.cached ? 'This device (offline copy)' : 'NASA IRSA archive (live)');
 }
 
 async function renderTargetInfo() {
@@ -814,11 +851,26 @@ async function computeKnown() {
     const rad = N * 6.15 / 3600 * 0.75;
     const out = [];
     // fixed field: one centre; mover mode: per-frame centre, so evaluate per item
-    const groups = S.target.kind === 'fixed' ? [{ c: S.target, items: S.items }] : S.items.map(it => ({ c: it.tgt, items: [it] }));
+    // moving targets: one search per visit (centre = mean position, radius
+    // widened to cover the object's motion); exact per-image filtering follows
+    let groups;
+    if (S.target.kind === 'fixed') groups = [{ c: S.target, items: S.items, r: rad }];
+    else {
+      const byV = new Map();
+      for (const it of S.items) { if (!byV.has(it.visit)) byV.set(it.visit, []); byV.get(it.visit).push(it); }
+      groups = [...byV.values()].map(items => {
+        const x = items.reduce((a, it) => a + Math.cos(it.tgt.dec * D2R) * Math.cos(it.tgt.ra * D2R), 0);
+        const y = items.reduce((a, it) => a + Math.cos(it.tgt.dec * D2R) * Math.sin(it.tgt.ra * D2R), 0);
+        const z = items.reduce((a, it) => a + Math.sin(it.tgt.dec * D2R), 0);
+        const c = { ra: ((Math.atan2(y, x) / D2R) + 360) % 360, dec: Math.atan2(z, Math.hypot(x, y)) / D2R };
+        const spread = Math.max(...items.map(it => sep(it.tgt.ra, it.tgt.dec, c.ra, c.dec)));
+        return { c, items, r: rad + spread };
+      });
+    }
     const merged = new Map();
     for (const gp of groups) {
       const mjds = gp.items.map(it => it.r.mjd);
-      for (const k of objectsInFieldPrecise(ssoCache, gp.c.ra, gp.c.dec, rad, mjds, 21)) {
+      for (const k of objectsInFieldPrecise(ssoCache, gp.c.ra, gp.c.dec, gp.r, mjds, 21)) {
         const key = k.obj.name;
         if (S.target.sso && key === S.target.sso.name) continue;
         const e = merged.get(key) || { obj: k.obj, pts: [] };
@@ -832,7 +884,7 @@ async function computeKnown() {
           if (t < m.track[0][0] || t > m.track[m.track.length - 1][0]) continue;
           const p = trackPos(m.track, t);
           const [pra, pdec] = toSpacecraft(p[0], p[1], p[3], t);
-          if (sep(pra, pdec, gp.c.ra, gp.c.dec) < rad) {
+          if (sep(pra, pdec, gp.c.ra, gp.c.dec) < gp.r) {
             const e = merged.get(m.name) || { obj: { name: m.name, kind: 'h' }, pts: [], exact: true };
             e.pts.push({ mjd: t, ra: pra, dec: pdec, mag: p[2] });
             merged.set(m.name, e);

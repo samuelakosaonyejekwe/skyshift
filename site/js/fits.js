@@ -59,23 +59,33 @@ export const obsId = f => `${f.week}_${String(f.ls).padStart(4, '0')}_${f.ss}`;
 async function range(url, start, end, signal, acc) {
   const hdr = end == null ? `bytes=${start}` : `bytes=${start}-${end}`;
   let last;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     try {
       const buf = await pooled(async () => {
-        // no-store: skips the browser HTTP cache, whose per-URL lock would serialise
-        // parallel range reads of the same file (SkyShift caches results in IndexedDB)
-        const r = await fetch(viaHost(url, i), { headers: { Range: hdr }, signal, mode: 'cors', cache: 'no-store' });
-        if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
-        const b = await r.arrayBuffer();
+        // a stalled request is abandoned after 8 s and retried on another host
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 8000);
+        const onAbort = () => ctl.abort();
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          // no-store: skips the browser HTTP cache, whose per-URL lock would serialise
+          // parallel range reads of the same file (SkyShift caches results in IndexedDB)
+          const r = await fetch(viaHost(url, i), { headers: { Range: hdr }, signal: ctl.signal, mode: 'cors', cache: 'no-store' });
+          if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
+          const b = await r.arrayBuffer();
         stats.bytes += b.byteLength + OVERHEAD; stats.requests++;
         if (acc) acc.bytes += b.byteLength + OVERHEAD;
-        return r.status === 200 && start >= 0 ? b.slice(start, end == null ? undefined : end + 1) : b;
+          return r.status === 200 && start >= 0 ? b.slice(start, end == null ? undefined : end + 1) : b;
+        } finally {
+          clearTimeout(timer);
+          if (signal) signal.removeEventListener('abort', onAbort);
+        }
       });
       return buf;
     } catch (e) {
       if (signal && signal.aborted) throw e;
       last = e;
-      await new Promise(res => setTimeout(res, 400 * (i + 1)));
+      await new Promise(res => setTimeout(res, 150 * (i + 1)));
     }
   }
   throw last;

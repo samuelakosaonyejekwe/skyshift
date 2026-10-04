@@ -32,6 +32,8 @@ jobs:
         with:
           python-version: "3.12"
 
+      - run: pip install --quiet numpy
+
       - name: Pull fresh NASA data (IRSA SPHEREx, JPL, Exoplanet Archive, NASA.gov)
         env:
           # code-only pushes reuse the latest published data (deploys in ~2 min);
@@ -63,6 +65,7 @@ jobs:
           set -e
           tmp=$(mktemp -d)
           cp -r site/data/. "$tmp"/
+          rm -rf "$tmp/packs"   # keep the CDN mirror under jsDelivr's size limit
           cd "$tmp"
           git init -q -b data
           git config user.name "${{ github.repository_owner }}"

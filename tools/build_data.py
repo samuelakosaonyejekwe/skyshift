@@ -34,6 +34,8 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 OUT = sys.argv[1] if len(sys.argv) > 1 else "site/data"
 TAP = os.environ.get("SKYSHIFT_TAP", "https://irsa.ipac.caltech.edu/TAP/sync")
 UA = "SkyShift-data-pipeline/1.0 (+https://github.com/samuelakosaonyejekwe/skyshift)"
@@ -570,6 +572,84 @@ def latest_s3():
 
 
 # --------------------------------------------------------------------------
+# Pre-built packs for featured targets (instant loading in the app)
+def spacecraft_offset_fn():
+    """SPHEREx geocentric position (au, equatorial) at an MJD, from the orbit file."""
+    try:
+        buf = open(os.path.join(OUT, "spherex_orbit.bin"), "rb").read()
+    except OSError:
+        return lambda m: None
+    t0, n = struct.unpack("<dI", buf[4:16])
+    step = struct.unpack("<d", buf[16:24])[0]
+    v = struct.unpack(f"<{n * 6}f", buf[24:24 + n * 24])
+    AU = 149597870.7
+
+    def at(mjd):
+        x = (mjd + 69.184 / 86400 - t0) / step
+        if x < 0 or x > n - 1:
+            return None
+        i = min(n - 2, int(x)); s_ = x - i; h = step * 86400
+        h00, h10, h01, h11 = 2*s_**3 - 3*s_**2 + 1, s_**3 - 2*s_**2 + s_, -2*s_**3 + 3*s_**2, s_**3 - s_**2
+        a, c = i * 6, i * 6 + 6
+        return [(h00*v[a+k] + h10*h*v[a+3+k] + h01*v[c+k] + h11*h*v[c+3+k]) / AU for k in range(3)]
+    return at
+
+
+def to_spacecraft(ra, dec, delta, sc):
+    if not sc or not delta or delta <= 0.0005:
+        return ra, dec
+    r, d = math.radians(ra), math.radians(dec)
+    g = [delta*math.cos(d)*math.cos(r) - sc[0], delta*math.cos(d)*math.sin(r) - sc[1], delta*math.sin(d) - sc[2]]
+    n = math.sqrt(sum(x*x for x in g))
+    return (math.degrees(math.atan2(g[1], g[0])) + 360) % 360, math.degrees(math.asin(g[2] / n))
+
+
+def build_packs(frames):
+    import packs
+    app = open(os.path.join(os.path.dirname(__file__), "..", "site", "js", "app.js"), encoding="utf-8").read()
+    feats = re.findall(r"\{ name: '((?:[^'\\]|\\.)*)', ra: ([\d.\-]+), dec: ([\d.\-]+)", app)
+    as_dict = lambda t: {"qr": t[0], "week": t[1], "ver": t[2], "det": t[3], "ls": t[4], "ss": t[5], "mjd": t[8]}
+    grid = {}
+    for f in frames:
+        grid.setdefault(tile_of(f[6], f[7]), []).append(f)
+    targets = []
+    for name, ra, dec in feats:
+        ra, dec = float(ra), float(dec)
+        near = []
+        b, _ = tile_of(ra, dec)
+        for bb in range(max(0, b - 1), min(NBANDS, b + 2)):
+            for i in range(band_count(bb)):
+                for f in grid.get((bb, i), []):
+                    if angdist(ra, dec, f[6], f[7]) < 1.70:
+                        near.append(as_dict(f))
+        if near:
+            targets.append({"key": f"f_{ra:.4f}_{dec:.4f}", "frames": near, "pos": (lambda f, ra=ra, dec=dec: (ra, dec))})
+    sc_at = spacecraft_offset_fn()
+    for m in (read_json("movers.json", {}) or {}).get("movers", []):
+        tr = m["track"]
+        tms = [p[0] for p in tr]
+        fr = []
+        for h in m["frames"]:
+            qr, week, ver, det, ls, ss, t = h.split("|")
+            fr.append({"qr": qr, "week": week, "ver": ver, "det": int(det), "ls": int(ls), "ss": int(ss), "mjd": float(t)})
+
+        def pos(f, tr=tr, tms=tms):
+            import bisect
+            k = min(len(tr) - 1, max(1, bisect.bisect_left(tms, f["mjd"])))
+            a, c = tr[k - 1], tr[k]
+            u = min(1, max(0, (f["mjd"] - a[0]) / ((c[0] - a[0]) or 1)))
+            ra = (a[1] + ((c[1] - a[1] + 540) % 360 - 180) * u) % 360
+            dec = a[2] + (c[2] - a[2]) * u
+            delta = (a[5] + (c[5] - a[5]) * u) if a[5] is not None and c[5] is not None else None
+            return to_spacecraft(ra, dec, delta, sc_at(f["mjd"]))
+        if fr:
+            targets.append({"key": f"m_{m['id']}", "frames": fr, "pos": pos})
+    log(f"packs: building {len(targets)} target packs")
+    n = packs.build(OUT, targets, log)
+    return sorted(t["key"] for t in targets if os.path.exists(os.path.join(OUT, "packs", t["key"] + ".bin")))
+
+
+# --------------------------------------------------------------------------
 # Redundancy: restore the last good copy of anything that failed upstream,
 # from the live site first, then from the CDN mirror of the `data` branch.
 PREV_BASES = [b for b in os.environ.get("SKYSHIFT_PREVIOUS", "").split() if b]
@@ -615,6 +695,9 @@ def reuse_previous():
         if not restore(name):
             return False
     restore("spherex_orbit.bin", True)
+    prev = read_json("meta.json", {}) or {}
+    for k in prev.get("packs") or []:
+        restore(f"packs/{k}.bin", True)
     log("reused previous data")
     return True
 
@@ -661,6 +744,16 @@ def main():
             status["movers"] = f"kept previous ({e.__class__.__name__})"
     else:
         restore("movers.json")
+
+    if frames:
+        try:
+            meta["packs"] = build_packs(frames)
+            status["packs"] = "ok"
+        except Exception as e:  # noqa: BLE001
+            log("packs FAILED:", e)
+            for k in (meta.get("packs") or []):
+                restore(f"packs/{k}.bin", True)
+            status["packs"] = f"kept previous ({e.__class__.__name__})"
 
     try:
         meta["s3Latest"] = latest_s3()
