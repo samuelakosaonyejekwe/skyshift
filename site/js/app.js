@@ -526,35 +526,52 @@ function setupInstall() {
   if (isStandalone()) btn.hidden = true;
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredPrompt = e; btn.hidden = false; });
   window.addEventListener('appinstalled', () => { btn.hidden = true; deferredPrompt = null; toast('SkyShift installed! Find it on your home screen or app list.', 'ok'); });
-  btn.onclick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      try { await deferredPrompt.userChoice; } catch { /* dismissed */ }
-      deferredPrompt = null;
-      return;
-    }
-    const ua = navigator.userAgent;
-    const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const steps = $('#installSteps');
-    steps.textContent = '';
-    const p = t => steps.append(h('p', { text: t }));
-    if (ios) {
-      p('On iPhone and iPad, install from Safari:');
-      p('1. Tap the Share button (square with an arrow ⬆︎) in the toolbar.');
-      p('2. Scroll down and tap “Add to Home Screen”.');
-      p('3. Tap “Add”. SkyShift opens full-screen and works offline.');
-    } else if (/Safari/.test(ua) && /Mac/.test(ua) && !/Chrome|Chromium|Edg/.test(ua)) {
-      p('In Safari on Mac: choose File → “Add to Dock”.');
-    } else if (/Firefox/.test(ua)) {
-      p('Firefox on Android: open the menu ⋮ → “Install”.');
-      p('Firefox on desktop doesn\'t install web apps yet. Open this page in Chrome, Edge or Safari to install, or bookmark it. It still works offline after the first visit.');
-    } else {
-      p('Open your browser menu (⋮ or …) and choose “Install SkyShift” or “Add to Home screen”.');
-      p('On desktop Chrome/Edge you can also click the install icon at the right end of the address bar.');
-    }
-    $('#dlgInstall').showModal();
-  };
+  btn.onclick = () => showInstall();
 }
+async function showInstall() {
+  const ua = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const android = /Android/i.test(ua);
+  const steps = $('#installSteps');
+  steps.textContent = '';
+  const p = (t, cls) => steps.append(h('p', { class: cls, text: t }));
+  const big = (label, sub, onclick, href, primary) => {
+    const el = h(href ? 'a' : 'button', { class: 'install-opt' + (primary ? ' primary' : ''), type: href ? undefined : 'button', href, download: href ? 'SkyShift.apk' : undefined, onclick },
+      h('b', { text: label }), h('span', { text: sub }));
+    steps.append(el);
+    return el;
+  };
+  const prompt = async () => { $('#dlgInstall').close(); deferredPrompt.prompt(); try { await deferredPrompt.userChoice; } catch { /* dismissed */ } deferredPrompt = null; };
+  if (isStandalone()) { p('SkyShift is already installed and running as an app on this device. ✓'); $('#dlgInstall').showModal(); return; }
+  if (android) {
+    let apk = null;
+    try { const r = await fetch('download/skyshift.apk.sha256', { cache: 'no-store' }); if (r.ok) apk = (await r.text()).trim(); } catch { /* offline */ }
+    if (apk && /^[0-9a-f]{64}$/.test(apk)) {
+      big('⬇ Download the Android app', 'Recommended · 1.5 MB · built for the latest Android (16), works on Android 5 and newer', null, 'download/skyshift.apk', true);
+      p('When it has downloaded, tap the file and choose Install. If Android asks, allow your browser to install apps (Settings → Allow from this source), go back and tap Install. The app is signed by SkyShift and opens full-screen.', 'small muted');
+    } else apk = null;
+    if (deferredPrompt) big('Install from this browser', 'Adds SkyShift to your home screen using your browser', prompt);
+    else p('Or in Chrome: open the menu ⋮ and tap “Install app” / “Add to Home screen”. Some browsers other than Chrome create an outdated app wrapper that Android warns about; the download above avoids that.', 'small muted');
+    if (apk) p('App fingerprint (SHA-256): ' + apk, 'tiny muted');
+  } else if (ios) {
+    const crios = /CriOS|EdgiOS/.test(ua), other = /FxiOS|OPiOS|mercury|GSA/.test(ua);
+    const m = ua.match(/OS (\d+)_(\d+)/), ver = m ? parseFloat(m[1] + '.' + m[2]) : 0;
+    if (other || (crios && ver && ver < 16.4)) {
+      p('To install on iPhone or iPad, open this page in Safari. iOS allows installing web apps from Safari, and from Chrome or Edge on iOS 16.4 and newer.');
+      big('Copy link to open in Safari', location.href.split('#')[0], async () => { try { await navigator.clipboard.writeText(location.href); toast('Link copied. Paste it in Safari.', 'ok'); } catch { /* ignore */ } });
+    }
+    p('1. Tap the Share button ' + (crios ? '(in the address bar)' : '(the square with an arrow ⬆︎ at the bottom)') + '.');
+    p('2. Scroll down and tap “Add to Home Screen”.');
+    p('3. Tap “Add”. SkyShift appears on your home screen, opens full-screen and works offline, on every iPhone and iPad from iOS 11.3 onwards.');
+  } else {
+    if (deferredPrompt) big('Install SkyShift', 'Adds SkyShift to your computer as an app', prompt, null, true);
+    if (/Safari/.test(ua) && /Mac/.test(ua) && !/Chrome|Chromium|Edg/.test(ua)) p('In Safari on Mac: choose File → “Add to Dock”.');
+    else if (/Firefox/.test(ua)) p('Firefox on desktop does not install web apps. Open this page in Chrome, Edge or Safari to install; SkyShift still works offline in Firefox after your first visit.');
+    else if (!deferredPrompt) p('Click the install icon at the right end of the address bar, or open the browser menu and choose “Install SkyShift”.');
+  }
+  $('#dlgInstall').showModal();
+}
+
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('sw.js').then(reg => {

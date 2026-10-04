@@ -53,7 +53,8 @@ jobs:
           latest=$(ls "$ANDROID_HOME/platforms" | sed 's/android-//' | grep -E '^[0-9]+$' | sort -n | tail -1)
           echo "Newest Android platform available: $latest"
           sed -i -E "s/(compileSdkVersion|targetSdkVersion|compileSdk|targetSdk)[ =]+[0-9]+/\1 $latest/" app/build.gradle || true
-          grep -E "compileSdk|targetSdk|minSdk" app/build.gradle || true
+          sed -i -E "s/versionName \"[^\"]*\"/versionName \"1.0.$code\"/" app/build.gradle
+          grep -E "compileSdk|targetSdk|minSdk|versionName|versionCode" app/build.gradle || true
           # build with Gradle, then align and sign with the official Android tools
           chmod +x gradlew
           ./gradlew --no-daemon -q assembleRelease bundleRelease

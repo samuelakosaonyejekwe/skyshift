@@ -76,6 +76,7 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || req.headers.has('range')) return;   // SPHEREx range reads go straight to NASA
   const url = new URL(req.url);
+  if (url.pathname.includes('/download/') || url.pathname.includes('/.well-known/')) return;   // app downloads go straight to the network
   if (req.mode === 'navigate') { e.respondWith(networkFirst(req, SHELL, 3500, e.preloadResponse)); return; }
   if (url.origin === location.origin) {
     if (url.pathname.includes('/data/')) {
