@@ -685,6 +685,28 @@ def restore_index(meta):
     return ok > 0.95 * max(1, len(tiles))
 
 
+def frames_from_tiles():
+    """Rebuild the frame list from the (restored) binary tiles."""
+    frames = []
+    tdir = os.path.join(OUT, "tiles")
+    for name in os.listdir(tdir) if os.path.isdir(tdir) else []:
+        if not name.endswith(".bin"):
+            continue
+        buf = open(os.path.join(tdir, name), "rb").read()
+        o = 4
+        npth = struct.unpack_from("<H", buf, o)[0]; o += 2
+        paths = []
+        for _ in range(npth):
+            n = buf[o]; o += 1
+            paths.append(buf[o:o + n].decode().split("|")); o += n
+        nr = struct.unpack_from("<I", buf, o)[0]; o += 4
+        for _ in range(nr):
+            pi, ls, ss, det, ra, dec, t = struct.unpack_from("<HHBBiiI", buf, o); o += 18
+            qr, wk, ver = paths[pi]
+            frames.append((qr, wk, ver, det, ls, ss, ra / 1e6, dec / 1e6, MJD0 + t / 1e5))
+    return frames
+
+
 def reuse_previous():
     """Code-only deploys: reuse the latest published data instead of a full
     NASA refresh (the scheduled runs keep the data fresh)."""
@@ -721,6 +743,10 @@ def main():
         log("SPHEREx index FAILED - restoring previous index:", e)
         restored = restore_index(meta)
         status["spherex"] = f"kept previous ({e.__class__.__name__})" if restored else "unavailable"
+        if restored:
+            # keep moving objects and target packs working from the restored index
+            frames = frames_from_tiles()
+            log(f"rebuilt {len(frames)} frames from the restored index")
 
     for key, fn in (("sso", fetch_sso), ("exoplanets", fetch_exoplanets), ("cad", fetch_cad),
                     ("news", fetch_news), ("images", fetch_images), ("ephem", fetch_ephem)):

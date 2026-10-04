@@ -352,3 +352,12 @@ dialog::backdrop { background: rgba(3, 5, 12, .6); backdrop-filter: blur(3px); }
 .map-legend i { background: linear-gradient(90deg, #20125a, #462896, #2870c8, #3cbebe, #aae678, #fff08c); }
 .map-zoom .icon-btn { background: rgba(12, 16, 40, .7); border-color: rgba(120, 150, 255, .2); color: #e9ecf8; backdrop-filter: blur(8px); }
 .map-card .hint { text-align: center; color: #9aa7d0; max-width: 820px; margin: 10px auto 0; }
+
+/* map: full width, controls outside the sky ellipse */
+.map-card { max-width: 1320px !important; }
+.map-wrap { max-width: 100% !important; min-width: 0 !important; }
+.map-tools { display: flex; align-items: center; gap: 8px; }
+.map-tools .map-zoom { position: static; flex-direction: row; gap: 6px; }
+.map-tools .map-zoom .icon-btn { width: 40px; height: 40px; }
+.map-legend { position: static !important; display: flex; width: max-content; margin: 10px auto 0; }
+@media (max-width: 700px) { .map-tools .map-zoom .icon-btn { width: 34px; height: 34px; } .map-legend { margin-top: 6px; } }
