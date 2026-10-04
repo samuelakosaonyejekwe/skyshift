@@ -61,11 +61,14 @@ export function levels(data, mode = 'auto', clip = [1, 99.7]) {
     return { lo: -5 * sig, hi: 5 * sig };
   }
   if (mode === 'sky') {
-    // astronomical display: black just below the sky level, so noise reads as
-    // a smooth dark background instead of blotches
-    const { med, sig } = robustStats(data);
-    const [hi] = percentiles(data, [clip[1]]);
-    return { lo: med - 1.5 * sig, hi: Math.max(hi, med + 8 * sig) };
+    // astronomical display: black a little below the sky level.  The sky noise
+    // is measured from the darker half of the pixels only, so crowded star
+    // fields and nebulae can't inflate it: the sky stays an even dark tone and
+    // dust lanes fade smoothly instead of clipping to black.
+    const [p2, p16, p50, hi] = percentiles(data, [2, 15.87, 50, clip[1]]);
+    const sigLow = Math.max(1e-9, p50 - p16);
+    const lo = Math.min(p50 - 2.5 * sigLow, p2);
+    return { lo, hi: Math.max(hi, p50 + 25 * sigLow) };
   }
   const [lo, hi] = percentiles(data, clip);
   return { lo, hi: hi > lo ? hi : lo + 1 };
