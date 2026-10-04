@@ -31,7 +31,7 @@
 <header class="topbar">
   <a class="brand" href="#/explore" aria-label="SkyShift home">
     <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><use href="#i-logo"/></svg>
-    <span class="brand-text"><b>SkyShift</b><small>SPHEREx Sky Time Machine</small></span>
+    <span class="brand-text"><b>Sky<span>Shift</span></b><small>NASA SPHEREx · Sky Time Machine</small></span>
   </a>
   <form class="search" id="searchForm" role="search" autocomplete="off">
     <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
@@ -76,10 +76,12 @@
         <button type="button" data-mapmode="recent" role="radio" aria-checked="false">Most recent</button>
       </div>
       <div class="chips" id="mapLayers" aria-label="Map layers">
+        <label><input type="checkbox" data-layer="sky" checked> Infrared sky</label>
+        <label><input type="checkbox" data-layer="coverage" checked> SPHEREx coverage</label>
         <label><input type="checkbox" data-layer="targets" checked> Featured</label>
         <label><input type="checkbox" data-layer="live" checked> Newest frames</label>
         <label><input type="checkbox" data-layer="exo"> Exoplanet hosts</label>
-        <label><input type="checkbox" data-layer="galactic" checked> Milky Way</label>
+        <label><input type="checkbox" data-layer="galactic"> Galactic plane</label>
         <label><input type="checkbox" data-layer="ecliptic" checked> Ecliptic</label>
         <label><input type="checkbox" data-layer="grid" checked> Grid</label>
       </div>
@@ -90,7 +92,7 @@
       <div class="map-legend" id="mapLegend"></div>
       <div class="map-zoom"><button type="button" class="icon-btn" id="zoomIn" aria-label="Zoom in">+</button><button type="button" class="icon-btn" id="zoomOut" aria-label="Zoom out">−</button></div>
     </div>
-    <p class="hint">Tap or click anywhere on the map to open that patch of sky. Scroll or pinch to zoom. <span class="legend-line gal"></span> Milky Way plane · <span class="legend-line ecl"></span> Ecliptic (where planets, asteroids and comets travel)</p>
+    <p class="hint">The real infrared sky (NASA/IPAC 2MASS) with SPHEREx's coverage glowing on top. The bright band is our Milky Way. Tap anywhere to open that patch of sky; scroll or pinch to zoom. <span class="legend-line ecl"></span> Ecliptic: where planets, asteroids and comets travel.</p>
   </div>
 
   <h2 class="section-title">Start here: famous places to watch</h2>
