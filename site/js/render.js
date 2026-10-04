@@ -272,3 +272,64 @@ export function upsample(data, n, f = 4) {
   }
   return out;
 }
+
+// Sub-pixel shift between two images of the same sky, from the stars they
+// share: [sx, sy] such that a(x, y) ~ ref(x + sx, y + sy).  Stars, not the
+// whole picture, because nebulae drag a cross-correlation off by pixels.
+// null when fewer than 4 stars match or they disagree.
+export function measureShift(a, ref, N, max = 3) {
+  const A = highPass(a, N), B = highPass(ref, N);
+  const pa = findPeaks(A, N, 10, 40, 6), pb = findPeaks(B, N, 10, 40, 6);
+  const dx = [], dy = [];
+  for (const q of pa) {
+    let best = null, bd = max;
+    for (const w of pb) { const d = Math.hypot(w.x - q.x, w.y - q.y); if (d < bd) { bd = d; best = w; } }
+    if (best) { dx.push(best.x - q.x); dy.push(best.y - q.y); }
+  }
+  if (dx.length < 4) return null;
+  const med = v => { const s = [...v].sort((p, q) => p - q); return s[s.length >> 1]; };
+  const mx = med(dx), my = med(dy);
+  const mad = med(dx.map((v, i) => Math.hypot(v - mx, dy[i] - my)));
+  return mad < 0.6 ? [mx, my] : null;
+}
+
+// image minus its 7x7 local mean: keeps stars, removes smooth nebulosity
+function highPass(a, N, r = 3) {
+  const I = new Float64Array((N + 1) * (N + 1)), C = new Float64Array((N + 1) * (N + 1));
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const v = a[y * N + x], ok = Number.isFinite(v);
+    const k = (y + 1) * (N + 1) + x + 1;
+    I[k] = (ok ? v : 0) + I[k - 1] + I[k - N - 1] - I[k - N - 2];
+    C[k] = (ok ? 1 : 0) + C[k - 1] + C[k - N - 1] - C[k - N - 2];
+  }
+  const out = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const x0 = Math.max(0, x - r), x1 = Math.min(N, x + r + 1), y0 = Math.max(0, y - r), y1 = Math.min(N, y + r + 1);
+    const box = (T) => T[y1 * (N + 1) + x1] - T[y0 * (N + 1) + x1] - T[y1 * (N + 1) + x0] + T[y0 * (N + 1) + x0];
+    const n = box(C);
+    out[y * N + x] = Number.isFinite(a[y * N + x]) && n ? a[y * N + x] - box(I) / n : NaN;
+  }
+  return out;
+}
+
+// Resample an image at (x + ox, y + oy) with Catmull-Rom cubic interpolation
+// (sharp, so star profiles keep their shape).  Non-finite pixels stay NaN.
+export function shiftSample(a, N, ox, oy) {
+  const out = new Float32Array(N * N);
+  const w = t => { const t2 = t * t, t3 = t2 * t; return [(-t3 + 2 * t2 - t) / 2, (3 * t3 - 5 * t2 + 2) / 2, (-3 * t3 + 4 * t2 + t) / 2, (t3 - t2) / 2]; };
+  const ix = Math.floor(ox), iy = Math.floor(oy), wx = w(ox - ix), wy = w(oy - iy);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let s = 0, ok = true;
+    for (let j = 0; j < 4 && ok; j++) {
+      const yy = y + iy + j - 1;
+      if (yy < 0 || yy >= N) { ok = false; break; }
+      for (let i = 0; i < 4; i++) {
+        const xx = x + ix + i - 1, v = xx >= 0 && xx < N ? a[yy * N + xx] : NaN;
+        if (!Number.isFinite(v)) { ok = false; break; }
+        s += wy[j] * wx[i] * v;
+      }
+    }
+    out[y * N + x] = ok ? s : NaN;
+  }
+  return out;
+}

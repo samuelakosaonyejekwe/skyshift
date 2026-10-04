@@ -245,6 +245,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 18px max(14px, env(safe-area-
 .item .grow { flex: 1; min-width: 0; }
 .item .grow b { display: block; overflow: hidden; text-overflow: ellipsis; }
 .item .t { font-size: .78rem; color: var(--muted); }
+.item .t.ev { display: block; margin-top: 2px; }
 .item .pill { font-size: .7rem; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .pill.known { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
 .pill.cand { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }

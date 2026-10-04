@@ -95,7 +95,7 @@ self.addEventListener('fetch', e => {
   // redundant mirrors of the data branch
   if (url.hostname === 'cdn.jsdelivr.net' || url.hostname === 'raw.githubusercontent.com') { e.respondWith(staleWhileRevalidate(e, DATA)); return; }
   // reference imagery & NASA media: cache for offline viewing
-  if (url.hostname === 'alasky.cds.unistra.fr' || url.hostname === 'images-assets.nasa.gov' || /(^|\.)nasa\.gov$/.test(url.hostname) && req.destination === 'image') {
+  if (url.hostname === 'alasky.cds.unistra.fr' || url.hostname === 'alaskybis.cds.unistra.fr' || url.hostname === 'images-assets.nasa.gov' || /(^|\.)nasa\.gov$/.test(url.hostname) && req.destination === 'image') {
     e.respondWith(cacheFirstLimited(e, MEDIA));
   }
   // everything else (live archive listings, name resolver, live feeds) -> network

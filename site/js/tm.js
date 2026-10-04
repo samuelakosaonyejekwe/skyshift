@@ -59,8 +59,10 @@ const refCache = new Map();
 function refImage(sv, tg, N) {
   const key = `${sv.id}|${tg.ra.toFixed(5)}|${tg.dec.toFixed(5)}|${N}`;
   if (!refCache.has(key)) {
-    const url = `https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=${encodeURIComponent(sv.id)}&width=${N}&height=${N}&fov=${(N * 6.15 / 3600).toFixed(6)}&projection=TAN&coordsys=icrs&ra=${tg.ra.toFixed(6)}&dec=${tg.dec.toFixed(6)}&format=fits`;
-    refCache.set(key, fetch(url).then(r => { if (!r.ok) throw new Error('ref ' + r.status); return r.arrayBuffer(); }).then(buf => {
+    const q = `hips-image-services/hips2fits?hips=${encodeURIComponent(sv.id)}&width=${N}&height=${N}&fov=${(N * 6.15 / 3600).toFixed(6)}&projection=TAN&coordsys=icrs&ra=${tg.ra.toFixed(6)}&dec=${tg.dec.toFixed(6)}&format=fits`;
+    // CDS runs the same service on a second host: use it if the first fails
+    const get = host => fetch(`https://${host}/${q}`).then(r => { if (!r.ok) throw new Error('ref ' + r.status); return r.arrayBuffer(); });
+    refCache.set(key, get('alasky.cds.unistra.fr').catch(() => get('alaskybis.cds.unistra.fr')).then(buf => {
       const hd = parseHeader(buf, 0);
       const c = hd.cards, w = c.NAXIS1, hh = c.NAXIS2, dv = new DataView(buf, hd.length);
       const out = new Float32Array(N * N);
@@ -1011,31 +1013,56 @@ function variability() {
 }
 
 // ------------------------------------------------------------------ hunt
-async function hunt() {
+async function hunt(again = false) {
   if (!S || S.items.length < 3) { toast('Load at least 3 images first.'); return; }
+  const sess = S;
   const btn = $('#huntBtn');
   btn.disabled = true; btn.lastChild.textContent = ' Scanning…';
   await new Promise(r => setTimeout(r, 30));
   const N = size();
   const vis = visible();
   const list = [];
-  const norm = it => { const d = derived(it).base; const { med, sig } = R.robustStats(d); return d.map(x => (x - med) / sig); };
-  const normed = new Map(vis.map(it => [it, norm(it)]));
-  // 1) "new source" search: compare each image with the median of the SAME
-  //    detector band (similar wavelength) from other times.  A real mover is a
-  //    point source where the reference shows only sky.
+  const rejected = { dipole: 0 };
+  const normed = new Map();
+  const norm = it => {
+    if (!normed.has(it)) { const d = derived(it).base; const { med, sig } = R.robustStats(d); normed.set(it, d.map(x => (x - med) / sig)); }
+    return normed.get(it);
+  };
+  // Residual of one image against the median of the SAME detector (similar
+  // wavelength) at other times, after aligning the image to that reference.
+  // Some SPHEREx frames sit a pixel or so off in position; without this a
+  // shifted bright star leaves a convincing "new source" beside itself.
+  let allMed = null;
+  const resCache = new Map();
+  const residualOf = it => {
+    if (resCache.has(it)) return resCache.get(it);
+    const others = S.items.filter(o => o !== it && o.f.det === it.f.det && Math.abs(o.r.mjd - it.r.mjd) > 0.05);
+    let refArr;
+    if (others.length >= 2) refArr = R.medianStack(others.map(norm), N);
+    else { if (!allMed && vis.length >= 3) allMed = R.medianStack(vis.map(norm), N); refArr = allMed; }
+    if (!refArr) { resCache.set(it, null); return null; }
+    let a = norm(it);
+    const sh = R.measureShift(a, refArr, N) || [0, 0];
+    if (Math.hypot(sh[0], sh[1]) > 0.1) a = R.shiftSample(a, N, -sh[0], -sh[1]);
+    // and to the same brightness scale, measured on the stars both share
+    // (each image's own noise varies several-fold with nebular light)
+    const k = fluxScale(a, refArr, N);
+    if (k !== 1) a = a.map(x => x * k);
+    const res = new Float32Array(N * N);
+    for (let i = 0; i < res.length; i++) res[i] = a[i] - refArr[i];
+    const out = { a, refArr, res, sh, rs: R.robustStats(res).sig, refSig: R.robustStats(refArr).sig, starComp: starSharpness(a, refArr, N) };
+    resCache.set(it, out);
+    return out;
+  };
+  // 1) "new source" search.  A real mover is a point source where the
+  //    reference shows only sky.
   const byDet = new Map();
   vis.forEach(it => { if (!byDet.has(it.f.det)) byDet.set(it.f.det, []); byDet.get(it.f.det).push(it); });
-  const allMed = vis.length >= 3 ? R.medianStack(vis.map(it => normed.get(it)), N) : null;
   for (const [, items] of byDet) {
     for (const it of items) {
-      const others = items.filter(o => o !== it && Math.abs(o.r.mjd - it.r.mjd) > 0.05);
-      const refArr = others.length >= 2 ? R.medianStack(others.map(o => normed.get(o)), N) : allMed;
-      if (!refArr) continue;
-      const a = normed.get(it), res = new Float32Array(N * N);
-      for (let i = 0; i < res.length; i++) res[i] = a[i] - refArr[i];
-      const { sig: rs } = R.robustStats(res);
-      const { sig: refSig } = R.robustStats(refArr);
+      const Rz = residualOf(it);
+      if (!Rz) continue;
+      const { a, refArr, res, rs, refSig, sh } = Rz;
       for (const p of R.findPeaks(res, N, 8, 10, 5)) {
         const k = Math.round(p.y) * N + Math.round(p.x);
         const v = a[k], ref = refArr[k];
@@ -1052,8 +1079,13 @@ async function hunt() {
         if (refMax > 40) continue;
         // no masked/blank pixels nearby (detector edges, bad pixels)
         let holes = 0;
-        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (!Number.isFinite(it.r.data[k + dy * N + dx])) holes++;
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (!Number.isFinite(res[k + dy * N + dx])) holes++;
         if (holes) continue;
+        // a star that moved (pointing error, PSF change) leaves a +/- pair; a new
+        // object leaves no hole beside it
+        let neg = 0;
+        for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) if (Math.hypot(dx, dy) <= 3) neg = Math.min(neg, res[k + dy * N + dx]);
+        if (neg < -0.4 * res[k]) { rejected.dipole++; continue; }
         // compactness: a real (point-like) source puts most residual light in the
         // central 3x3 pixels; nebular structure and smeared artefacts do not
         let c3 = 0, c7 = 0;
@@ -1066,10 +1098,14 @@ async function hunt() {
         if (comp < 0.45) continue;
         // bright, structured nebulosity around it (in the multi-epoch reference)
         const neb = localSig(refArr, N, p.x, p.y) / refSig > 4;
-        list.push({ kind: 'mover', x: p.x, y: p.y, snr: res[k] / Math.max(rs, lrs), mjd: it.r.mjd, it, wave: it.r.wave, comp, neb });
+        list.push({ kind: 'mover', x: p.x, y: p.y, xi: p.x - sh[0], yi: p.y - sh[1], snr: res[k] / Math.max(rs, lrs), peak: res[k], mjd: it.r.mjd, it, wave: it.r.wave, comp, neb, starComp: Rz.starComp });
       }
     }
   }
+  // sharper than every star in the same image: a cosmic ray or hot pixel, since
+  // anything real passes through the telescope and is blurred like the stars
+  for (const d of list) d.sharp = !!d.starComp && d.comp > d.starComp.hi + 0.06 + 1 / Math.max(1, d.snr);
+  const strong = d => !d.known && d.comp >= 0.55 && d.snr >= 9;
   // 2) link detections into straight-line tracklets (same visit, distinct times)
   const tracks = [];
   const det = list.filter(d => d.comp >= 0.55 && d.snr >= 9).sort((a, b) => a.mjd - b.mjd);
@@ -1145,30 +1181,77 @@ async function hunt() {
   }
   // 4) cross-match with known objects
   if (!S.known.length && $('#optKnown').checked) await computeKnown();
-  const s = 6.15 / 3600 * D2R;
+  if (sess !== S) return;
   for (const d of list) {
     const c = d.it.tgt;
     for (const k of S.known) {
       const pt = k.pts.find(p => Math.abs(p.mjd - d.mjd) < 1e-4);
       if (!pt) continue;
-      const pr = skyToTan(pt.ra, pt.dec, c.ra * D2R, Math.sin(c.dec * D2R), Math.cos(c.dec * D2R));
-      if (!pr) continue;
-      const x = N / 2 - pr[0] / s - 0.5, y = N / 2 - pr[1] / s - 0.5;
-      if (Math.hypot(x - d.x, y - d.y) < Math.max(3, k.unc * 1.3)) { d.known = k.short; break; }
+      const q = skyToPix(c, pt.ra, pt.dec, N);
+      if (q && Math.hypot(q[0] - d.x, q[1] - d.y) < Math.max(3, k.unc * 1.3)) { d.known = k.short; break; }
     }
     const sky = pixToSky(d.it.tgt, d.x, d.y, N);
     d.ra = sky[0]; d.dec = sky[1];
   }
-  // 5) verify unexplained candidates against SPHEREx's own pixel-quality flags
-  //    (cosmic rays, hot/bad pixels, ghosts, persistence, outliers)
-  //    Only star-shaped, strong detections can become "verified", so those go first.
-  const toCheck = list.filter(d => !d.known && d.comp >= 0.55 && d.snr >= 9).sort((a, b) => b.snr - a.snr).slice(0, 40);
+  // 5) second look: SPHEREx exposes its detectors in co-pointed pairs (1+4,
+  //    2+5, 3+6, same instant) and steps across a field in exposures a few
+  //    minutes apart (within 14 min here).  A real source shows up again in those; a cosmic ray or detector
+  //    glitch does not.  Companion exposures not yet loaded are fetched once.
+  const cand = list.filter(d => strong(d) && !d.sharp);
+  if (!again && cand.length && navigator.onLine) {
+    const have = new Set(S.items.map(it => frameKey(it.f)));
+    const want = S.frames.filter(f => !have.has(frameKey(f)) && cand.some(d => Math.abs(f.mjd - d.mjd) < 0.01)).slice(0, 12);
+    if (want.length) {
+      btn.lastChild.textContent = ` Fetching ${want.length} companion exposure${want.length > 1 ? 's' : ''}…`;
+      loadFrames(want);
+      const t0 = Date.now();
+      while (sess === S && S.pending > 0 && Date.now() - t0 < 90000) await new Promise(r => setTimeout(r, 300));
+      if (sess !== S) return;
+      return hunt(true);
+    }
+  }
+  for (const d of cand) {
+    d.looks = 0; d.seen = 0; d.lookLog = []; d.bandMiss = 0;
+    for (const o of S.items) {
+      const dt = Math.abs(o.r.mjd - d.mjd);
+      if (o === d.it || dt >= 0.01) continue;
+      const Ro = residualOf(o), q = Ro && skyToPix(o.tgt, d.ra, d.dec, N);
+      if (!q || q[0] < 6 || q[1] < 6 || q[0] > N - 7 || q[1] > N - 7) continue;
+      const rad = 1.5 + 120 * dt;                 // up to ~30"/h of motion (< 1.2 px in 14 min)
+      let mx = -Infinity, ok = true;
+      for (let dy = -Math.ceil(rad); dy <= Math.ceil(rad) && ok; dy++) for (let dx = -Math.ceil(rad); dx <= Math.ceil(rad); dx++) {
+        if (Math.hypot(dx, dy) > rad) continue;
+        const xx = Math.round(q[0]) + dx, yy = Math.round(q[1]) + dy;
+        if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+        const v = Ro.res[yy * N + xx];
+        if (!Number.isFinite(v)) { ok = false; break; }
+        if (v > mx) mx = v;
+      }
+      if (!ok) continue;
+      // the same detector minutes apart sees the same wavelengths on the same
+      // brightness scale, so it must show the source at about its strength
+      // (when it is sensitive enough to); other detectors only add support,
+      // since the object's colour is unknown
+      const sc = Math.max(Ro.rs, localSig(Ro.res, N, q[0], q[1])), sameBand = o.f.det === d.it.f.det;
+      if (sameBand && d.peak < 5 * sc) continue;
+      d.looks++;
+      const hit = mx > (sameBand ? Math.max(4 * sc, 0.3 * d.peak) : 4 * sc);
+      if (hit) d.seen++; else if (sameBand) d.bandMiss++;
+      d.lookLog.push({ det: o.f.det, min: (o.r.mjd - d.mjd) * 1440, hit, twin: dt < 1e-5 && (o.f.det - 1) % 3 === (d.it.f.det - 1) % 3 });
+    }
+    // bright enough that a second exposure must show it, but none does
+    d.single = d.bandMiss > 0 || (d.looks > 0 && d.seen === 0 && d.snr >= 12);
+  }
+  // 6) SPHEREx's own pixel-quality flags (cosmic rays, hot/bad pixels, ghosts,
+  //    persistence, outliers), read at the source's position on the detector
+  const toCheck = cand.filter(d => !d.single).sort((a, b) => b.snr - a.snr).slice(0, 120);
   if (toCheck.length && navigator.onLine) {
     btn.lastChild.textContent = ` Verifying ${toCheck.length} candidates…`;
     const byFrame = new Map();
     for (const d of toCheck) {
       if (!d.it.r.wcs || !d.it.r.flagsAt) continue;
-      const p = new WCS(d.it.r.wcs).sky2pix(d.ra, d.dec);
+      const [ra, dec] = pixToSky(d.it.tgt, d.xi, d.yi, N);
+      const p = new WCS(d.it.r.wcs).sky2pix(ra, dec);
       if (!p) continue;
       const k = frameKey(d.it.f);
       if (!byFrame.has(k)) byFrame.set(k, { f: d.it.f, at: d.it.r.flagsAt, ds: [], pts: [] });
@@ -1176,26 +1259,128 @@ async function hunt() {
     }
     await Promise.all([...byFrame.values()].map(async g => {
       const bits = await flagsNear(g.f, g.pts, g.at).catch(() => g.pts.map(() => -1));
-      g.ds.forEach((d, i) => { d.flagBits = bits[i]; d.verified = bits[i] === 0 ? true : bits[i] > 0 ? false : null; });
+      g.ds.forEach((d, i) => {
+        d.flagBits = bits[i];
+        // a bright source saturates (OVERFLOW), which also trips the ramp-fit
+        // bits (TRANSIENT, SUR_ERROR, NONLINEAR, OUTLIER) just like a cosmic ray
+        // does.  A cosmic ray cannot reappear at the same place in the exposures
+        // taken alongside, so a source seen again there is cleared of those
+        // bits; ghost, persistence and bad-pixel bits always count.
+        const seenAgain = d.seen >= 1 && d.seen >= d.looks / 2;
+        const left = bits[i] > 0 && seenAgain ? bits[i] & ~BRIGHT_BITS : bits[i];
+        d.bright = bits[i] > 0 && left === 0;
+        d.verified = left === 0 ? true : left > 0 ? false : null;
+      });
     }));
   }
-  // 6) archive check: was something already at this spot in 2MASS (1997-2001)
+  // 7) archive check: was something already at this spot in 2MASS (1997-2001)
   //    or WISE/NEOWISE (2010-2020)?  A new body (asteroid, distant planet) is
   //    absent there; a variable young star or a nebular knot is not.
-  const strict = list.filter(d => !d.known && d.verified === true && d.comp >= 0.55 && d.snr >= 9);
   const ctr = S.target.kind === 'fixed' ? S.target : S.items[0].tgt;
   for (const c of changes) { const sky = pixToSky(ctr, c.x, c.y, N); c.ra = sky[0]; c.dec = sky[1]; c.tgt = ctr; }
-  await archiveCheck([...strict, ...changes], N, btn);
-  for (const d of list) d.conf = d.known ? 'known' : !strict.includes(d) ? 'low' : d.archive ? 'var' : d.neb ? 'neb' : 'high';
-  for (const c of changes) c.conf = c.archive ? 'var' : c.neb ? 'neb' : 'high';
+  await archiveCheck([...toCheck.filter(d => d.verified !== false), ...changes], N, btn);
+  if (sess !== S) return;
+  // A variable star brightens on its own centre; an object passing a star
+  // does not.  Images are aligned, so when the SPHEREx reference and the
+  // archive both put the star over 1 px (6") from the new light, it is real.
+  for (const d of toCheck) {
+    if (!d.archive) continue;
+    const Rz = residualOf(d.it), c1 = Rz && centroid(Rz.refArr, N, d.x, d.y, 5 * Rz.refSig), c2 = d.archXY;
+    const off = c => c ? Math.hypot(c[0] - d.x, c[1] - d.y) : 0;
+    d.offStar = Math.min(off(c1) || Infinity, off(c2) || Infinity);
+    if (c1 && c2 && d.offStar > 1) { d.passing = true; d.archive = false; }
+  }
+  for (const d of list) {
+    d.why = d.known ? null : !strong(d) ? 'weak' : d.sharp ? 'sharp' : d.single ? 'single' : d.verified === false ? 'flagged' : !toCheck.includes(d) ? 'unchecked' : null;
+    d.conf = d.known ? 'known' : d.why ? 'low' : d.verified !== true || d.archive === undefined ? 'pending' : d.archive ? 'var' : d.neb ? 'neb' : 'high';
+  }
+  for (const c of changes) c.conf = c.archive === undefined ? 'pending' : c.archive ? 'var' : c.neb ? 'neb' : 'high';
   // a tracklet only counts if every detection in it is verified or a known object
   for (let i = tracks.length - 1; i >= 0; i--) if ([tracks[i].a, tracks[i].b, tracks[i].c].some(d => d.conf === 'low')) tracks.splice(i, 1);
   const all = [...list.sort((a, b) => (a.known ? 1 : 0) - (b.known ? 1 : 0) || b.snr - a.snr), ...changes];
-  S.hunt = { list: all, tracks, sel: null };
+  const shifts = vis.map(it => resCache.get(it)).filter(Boolean).map(z => Math.hypot(z.sh[0], z.sh[1]));
+  S.hunt = { list: all, tracks, sel: null, rejected, aligned: shifts.filter(x => x > 0.3).length, maxShift: Math.max(0, ...shifts) };
   renderHunt();
   btn.disabled = false; btn.lastChild.textContent = ' Scan again';
   render();
 }
+
+// how concentrated a source's light is: share of the (positive, background-
+// free) light within 7x7 pixels that falls in the central 3x3
+function compactness(a, N, x, y) {
+  const cx = Math.round(x), cy = Math.round(y), ann = [];
+  for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+    const v = a[(cy + dy) * N + cx + dx];
+    if (Math.max(Math.abs(dx), Math.abs(dy)) > 3 && Number.isFinite(v)) ann.push(v);
+  }
+  ann.sort((p, q) => p - q);
+  const bg = ann.length ? ann[ann.length >> 1] : 0;
+  let c3 = 0, c7 = 0;
+  for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+    const q = a[(cy + dy) * N + cx + dx] - bg;
+    if (!(q > 0)) continue;
+    c7 += q; if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) c3 += q;
+  }
+  return c7 > 0 ? c3 / c7 : 0;
+}
+// the stars' own compactness in this image (median and spread), from the
+// stars of the reference; null when there are too few
+function starSharpness(a, ref, N) {
+  const v = R.findPeaks(ref, N, 10, 30, 7).map(p => compactness(a, N, p.x, p.y)).filter(c => c > 0).sort((p, q) => p - q);
+  return v.length >= 5 ? { med: v[v.length >> 1], hi: v[Math.floor(v.length * 0.9)], n: v.length } : null;
+}
+
+// median flux ratio ref/img of the stars in the reference (3x3 aperture,
+// local background removed); 1 when there are too few stars to tell
+function fluxScale(img, ref, N) {
+  const ap = (a, x, y) => {
+    const cx = Math.round(x), cy = Math.round(y), ann = [];
+    let s = 0;
+    for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+      const r = Math.hypot(dx, dy), v = a[(cy + dy) * N + cx + dx];
+      if (!Number.isFinite(v)) { if (r <= 1.5) return NaN; continue; }
+      if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) s += v; else if (r >= 4) ann.push(v);
+    }
+    if (ann.length < 20) return NaN;
+    ann.sort((p, q) => p - q);
+    return s - 9 * ann[ann.length >> 1];
+  };
+  const r = [];
+  for (const p of R.findPeaks(ref, N, 10, 30, 7)) {
+    const fa = ap(img, p.x, p.y), fr = ap(ref, p.x, p.y);
+    if (fa > 0 && fr > 0) r.push(fr / fa);
+  }
+  if (r.length < 5) return 1;
+  r.sort((p, q) => p - q);
+  return clamp(r[r.length >> 1], 0.1, 10);
+}
+
+function skyToPix(c, ra, dec, N) {
+  const s = 6.15 / 3600 * D2R;
+  const pr = skyToTan(ra, dec, c.ra * D2R, Math.sin(c.dec * D2R), Math.cos(c.dec * D2R));
+  return pr ? [N / 2 - pr[0] / s - 0.5, N / 2 - pr[1] / s - 0.5] : null;
+}
+
+// light-weighted centre of the brightest pixel within 1 px of (x, y), or null
+// when nothing there rises above thr
+function centroid(img, N, x, y, thr) {
+  let bx = -1, by = -1, bv = thr;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const xx = Math.round(x) + dx, yy = Math.round(y) + dy;
+    if (xx > 0 && yy > 0 && xx < N - 1 && yy < N - 1 && img[yy * N + xx] > bv) { bv = img[yy * N + xx]; bx = xx; by = yy; }
+  }
+  if (bx < 0) return null;
+  let s = 0, sx = 0, sy = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const w = Math.max(0, img[(by + dy) * N + bx + dx]);
+    if (Number.isFinite(w)) { s += w; sx += w * (bx + dx); sy += w * (by + dy); }
+  }
+  return s > 0 ? [sx / s, sy / s] : null;
+}
+
+// SPHEREx flag bits that a bright real source sets by itself: TRANSIENT,
+// OVERFLOW, SUR_ERROR, NONLINEAR, OUTLIER (Explanatory Supplement, Table 16)
+const BRIGHT_BITS = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 15) | (1 << 19);
 
 // robust noise in an annulus (4-10 px) around (x, y), ignoring the source itself
 function localSig(arr, N, x, y) {
@@ -1218,6 +1403,7 @@ const ARCHIVE = ['CDS/P/2MASS/K', 'CDS/P/unWISE/W1'];
 async function archiveCheck(ds, N, btn) {
   if (!ds.length || !navigator.onLine) return;
   btn.lastChild.textContent = ' Checking 2MASS and WISE archives…';
+  for (const d of ds) { delete d.archive; delete d.archXY; }
   const groups = new Map();
   for (const d of ds) {
     const tg = d.tgt || d.it.tgt, key = `${tg.ra.toFixed(5)}|${tg.dec.toFixed(5)}`;
@@ -1243,10 +1429,10 @@ async function archiveCheck(ds, N, btn) {
           const r = Math.hypot(dx, dy), xx = Math.round(d.x) + dx, yy = Math.round(d.y) + dy;
           if (r >= 3 && r <= 6 && xx >= 0 && yy >= 0 && xx < N && yy < N && Number.isFinite(im[yy * N + xx])) ann.push(im[yy * N + xx]);
         }
-        if (pk >= top[i]) return true;
-        if (ann.length < 20) return false;
         ann.sort((a, b) => a - b);
-        return pk - ann[ann.length >> 1] > 5 * Math.max(st[i].sig, localSig(im, N, d.x, d.y));
+        const hit = pk >= top[i] || (ann.length >= 20 && pk - ann[ann.length >> 1] > 5 * Math.max(st[i].sig, localSig(im, N, d.x, d.y)));
+        if (hit && !d.archXY) d.archXY = centroid(im, N, d.x, d.y, -Infinity);
+        return hit;
       });
     }
   }));
@@ -1261,11 +1447,18 @@ function renderHunt() {
   const out = $('#huntOut');
   out.textContent = '';
   const H = S.hunt;
-  const nk = H.list.filter(d => d.known).length, nc = H.list.filter(d => d.kind !== 'change' && d.conf === 'high').length, nch = H.list.filter(d => d.kind === 'change').length;
+  const src = H.list.filter(d => d.kind !== 'change');
+  const nk = src.filter(d => d.known).length, nc = src.filter(d => d.conf === 'high').length, nch = H.list.length - src.length;
   const nchv = H.list.filter(d => d.kind === 'change' && d.archive).length;
-  const nv = H.list.filter(d => d.kind !== 'change' && (d.conf === 'var' || d.conf === 'neb')).length;
+  const nv = src.filter(d => d.conf === 'var' || d.conf === 'neb').length, np = H.list.filter(d => d.conf === 'pending').length;
   out.append(h('p', { class: 'small' }, h('b', { text: `${nk} known objects · ${nc} verified unexplained source${nc === 1 ? '' : 's'} · ${nch} change${nch === 1 ? '' : 's'} between visits${nchv ? ` (${nchv} at known stars)` : ''} · ${H.tracks.length} moving tracklet${H.tracks.length === 1 ? '' : 's'}` }),
-    nv ? h('span', { class: 'muted', text: ` · ${nv} explained by an archive star or nebula` }) : null));
+    nv ? h('span', { class: 'muted', text: ` · ${nv} explained by an archive star or nebula` }) : null,
+    H.aligned ? h('span', { class: 'muted', text: ` · ${H.aligned} image${H.aligned > 1 ? 's' : ''} re-aligned (up to ${(H.maxShift * 6.15).toFixed(0)}″ off)` }) : null));
+  if (np) {
+    out.append(h('p', { class: 'small' }, h('span', { class: 'pill var', text: 'CHECK PENDING' }),
+      ` ${np} find${np > 1 ? 's' : ''} passed every test that works without a connection; SPHEREx's quality flags and the 2MASS/WISE archives ${navigator.onLine ? 'could not be reached' : 'need the internet'}. Until then nothing is called verified. The check finishes by itself ${navigator.onLine ? 'when you retry' : 'when you are back online'}. `,
+      navigator.onLine ? h('button', { class: 'btn sm', type: 'button', text: 'Retry now', onclick: () => hunt() }) : null));
+  }
   if (H.tracks.length) {
     out.append(h('h3', { text: 'Moving tracklets (3+ detections in a line)' }));
     for (const t of H.tracks.slice(0, 10)) {
@@ -1274,34 +1467,58 @@ function renderHunt() {
         h('button', { class: 'btn sm', type: 'button', text: 'Show', onclick: () => { S.hunt.sel = t.a; jumpToMjd(t.a.mjd); } })));
     }
   }
+  // detections that failed a test, summarised by the reason
   const lows = H.list.filter(d => d.conf === 'low');
   const shown = H.showLow ? H.list : H.list.filter(d => d.conf !== 'low');
-  if (lows.length) {
-    out.append(h('p', { class: 'small muted' }, `${lows.length} low-confidence detection${lows.length > 1 ? 's' : ''} (flagged by SPHEREx quality bits as cosmic rays, hot pixels or ghosts, or not star-shaped) ${H.showLow ? 'shown' : 'hidden'}. `,
-      h('button', { class: 'btn sm', type: 'button', text: H.showLow ? 'Hide them' : 'Show them', onclick: () => { H.showLow = !H.showLow; renderHunt(); drawOverlay(currentItem()); } })));
+  const why = { flagged: 0, sharp: 0, single: 0, weak: 0, unchecked: 0 };
+  for (const d of lows) why[d.why]++;
+  const parts = [why.flagged && `${why.flagged} marked by SPHEREx's quality flags (cosmic rays, hot pixels, ghosts)`,
+    why.sharp && `${why.sharp} sharper than any star (cosmic rays, hot pixels)`,
+    why.single && `${why.single} missing from the exposure${why.single > 1 ? 's' : ''} taken alongside`,
+    why.unchecked && `${why.unchecked} beyond the 120 strongest (zoom in or pick one band to check them)`,
+    why.weak && `${why.weak} too faint or not star-shaped`,
+    H.rejected.dipole && `${H.rejected.dipole} star${H.rejected.dipole > 1 ? 's' : ''} that only shifted position`].filter(Boolean);
+  if (parts.length) {
+    out.append(h('p', { class: 'small muted' }, `Ruled out: ${parts.join('; ')}. `,
+      lows.length ? h('button', { class: 'btn sm', type: 'button', text: H.showLow ? 'Hide them' : `Show ${lows.length}`, onclick: () => { H.showLow = !H.showLow; renderHunt(); drawOverlay(currentItem()); } }) : null));
   }
+  const LOW = { flagged: ['FLAGGED', 'SPHEREx quality flags mark these pixels'], single: ['ONE EXPOSURE', 'Missing from the exposure(s) taken at the same moment or minutes apart (in the same band, where it would have to show): a cosmic ray or detector artefact'], weak: ['WEAK', 'Too faint or not star-shaped to test'], sharp: ['SPIKE', 'Sharper than every star in the image: a cosmic ray or hot pixel'], unchecked: ['UNCHECKED', 'Not checked: only the 120 strongest candidates are'] };
   for (const d of shown.slice(0, 80)) {
-    const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: 'pill change', text: d.sign > 0 ? 'BRIGHTER' : 'FAINTER' })
-      : d.conf === 'high' ? h('span', { class: 'pill cand', title: d.archive === false ? 'Star-shaped, clean SPHEREx pixels, high S/N, and nothing at this spot in 2MASS or WISE' : 'Star-shaped, clean SPHEREx pixels, high S/N (archive check unavailable offline)', text: 'VERIFIED ✓' })
-        : d.conf === 'var' ? h('span', { class: 'pill var', title: 'A source is already at this spot in 2MASS (1997-2001) or WISE (2010-2020): most likely a variable star, not a new object', text: 'VARIABLE?' })
+    const seenTxt = d.seen ? ` Seen again in ${d.seen} of ${d.looks} companion exposure${d.looks > 1 ? 's' : ''}.` : '';
+    const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: d.conf === 'pending' ? 'pill var' : 'pill change', title: d.conf === 'pending' ? 'Archive check still to run' : null, text: d.sign > 0 ? 'BRIGHTER' : 'FAINTER' })
+      : d.conf === 'high' ? h('span', { class: 'pill cand', title: 'Star-shaped, clean SPHEREx pixels, high S/N, not a known asteroid or comet, and nothing at this spot in 2MASS or WISE.' + seenTxt + (d.bright ? ' Bright enough to saturate SPHEREx pixels.' : '') + (d.passing ? ' Passes close to a catalogued star.' : ''), text: d.seen ? 'VERIFIED ✓✓' : 'VERIFIED ✓' })
+        : d.conf === 'var' ? h('span', { class: 'pill var', title: 'A source is already at this exact spot in 2MASS (1997-2001) or WISE (2010-2020) and the extra light is centred on it: a variable star, not a new object', text: 'VARIABLE?' })
           : d.conf === 'neb' ? h('span', { class: 'pill var', title: 'Sits in bright, structured nebulosity: may be a nebular knot', text: 'NEBULA' })
-            : h('span', { class: 'pill', title: d.flagBits > 0 ? 'SPHEREx quality flags mark these pixels' : 'Weak or not verified', text: d.flagBits > 0 ? 'FLAGGED' : 'LOW' });
+            : d.conf === 'pending' ? h('span', { class: 'pill var', title: 'Passed the offline tests; the online checks are still to run', text: 'PENDING' })
+              : h('span', { class: 'pill', title: (LOW[d.why] || LOW.weak)[1], text: (LOW[d.why] || LOW.weak)[0] });
     const title = d.known ? d.known : d.kind === 'change' ? (d.conf === 'neb' && !d.archive ? `${d.sign > 0 ? 'Brightened' : 'Faded'} in bright nebulosity (may be a knot or seeing)` : d.archive ? `Variable star: ${d.sign > 0 ? 'brightened' : 'faded'} between visits` : d.archive === false && d.sign > 0 ? 'New source between visits (nothing in 2MASS/WISE)' : `${d.sign > 0 ? 'Brightened' : 'Faded'} between visits`)
-      : d.conf === 'var' ? `Known star at ${d.wave.toFixed(2)} µm, brighter in this image` : d.conf === 'neb' ? `Knot in nebula at ${d.wave.toFixed(2)} µm` : `Single-image source at ${d.wave.toFixed(2)} µm`;
+      : d.conf === 'var' ? `Known star at ${d.wave.toFixed(2)} µm, brighter in this image` : d.conf === 'neb' ? `Knot in nebula at ${d.wave.toFixed(2)} µm`
+        : d.passing ? `Source passing ${(d.offStar * 6.15).toFixed(0)}″ from a star, ${d.wave.toFixed(2)} µm` : `Single-image source at ${d.wave.toFixed(2)} µm`;
     out.append(h('div', { class: 'item' }, pill,
-      h('div', { class: 'grow' }, h('b', { text: title }), h('span', { class: 't', text: `${d.ra.toFixed(5)}°, ${d.dec.toFixed(5)}° · S/N ${d.snr.toFixed(0)}${d.mjd ? ' · ' + fmtDate(d.mjd, true) : ''}` })),
+      h('div', { class: 'grow' }, h('b', { text: title }), h('span', { class: 't', text: `${d.ra.toFixed(5)}°, ${d.dec.toFixed(5)}° · S/N ${d.snr.toFixed(0)}${d.mjd ? ' · ' + fmtDate(d.mjd, true) : ''}` }),
+        d.lookLog && d.lookLog.length && !d.known ? h('span', { class: 't ev', text: evidence(d) }) : null),
       h('button', { class: 'btn sm', type: 'button', text: 'Show', onclick: () => { S.hunt.sel = d; if (d.mjd) jumpToMjd(d.mjd); else { setMode('diff'); } } }),
       d.known ? null : h('button', { class: 'btn sm', type: 'button', title: 'Save to My finds', text: '★', onclick: () => saveFind(d) })));
   }
   if (!H.list.length) out.append(h('p', { class: 'muted small', text: 'Nothing stood out above the noise. Try another band, load more images, or a busier part of the ecliptic.' }));
-  out.append(h('p', { class: 'muted small', text: 'Each unexplained source is checked for star shape, SPHEREx quality flags, local noise (so nebulae do not count), known asteroids and comets, and whether 2MASS or WISE already saw something there. Even so, confirm by checking the image before and after, and in Difference mode.' }));
+  out.append(h('p', { class: 'muted small', text: 'Every image is first aligned to its reference. Each unexplained source must then be star-shaped, stand out from the local noise (so nebulae do not count), leave no hole beside it (a shifted star does), reappear in the exposures SPHEREx took alongside, have clean SPHEREx quality flags, not be a known asteroid or comet, and have nothing at its spot in 2MASS or WISE. Even so, confirm it by eye in Blink and Difference mode.' }));
+}
+
+// "Seen again: twin detector (same instant), 2 min earlier · not in 1 of 3"
+function evidence(d) {
+  const hits = d.lookLog.filter(l => l.hit), n = d.lookLog.length;
+  const when = l => l.twin ? 'twin detector (same instant)' : Math.abs(l.min) < 0.05 ? `band ${l.det} (same instant)` : `${Math.abs(l.min).toFixed(0)} min ${l.min < 0 ? 'earlier' : 'later'}`;
+  const groups = new Map();
+  for (const l of hits) groups.set(when(l), (groups.get(when(l)) || 0) + 1);
+  const list = [...groups].map(([w, c]) => c > 1 ? `${w} ×${c}` : w).join(', ');
+  return hits.length ? `Seen again in ${hits.length} of ${n} exposure${n > 1 ? 's' : ''} taken alongside: ${list}` : `Not seen in the ${n} exposure${n > 1 ? 's' : ''} taken alongside`;
 }
 
 async function saveFind(d) {
   const id = `${S.target.name}|${d.ra.toFixed(5)}|${d.dec.toFixed(5)}|${d.mjd || ''}`;
   await store.put('finds', id, {
     id, target: S.target.name, kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, date: d.mjd ? fmtDate(d.mjd, true) : null,
-    wave: d.wave || null, snr: d.snr, note: (d.sign ? (d.sign > 0 ? 'brightened' : 'faded') : 'single-image source') + (d.archive ? ', source in 2MASS/WISE' : d.archive === false ? ', nothing in 2MASS/WISE' : '') + (d.conf === 'neb' ? ', in nebula' : ''),
+    wave: d.wave || null, snr: d.snr, note: (d.sign ? (d.sign > 0 ? 'brightened' : 'faded') : 'single-image source') + (d.lookLog && d.lookLog.length ? '; ' + evidence(d) : '') + (d.archive ? ', source in 2MASS/WISE' : d.archive === false ? ', nothing in 2MASS/WISE' : '') + (d.conf === 'neb' ? ', in nebula' : ''),
     frame: d.it ? frameKey(d.it.f) : null, saved: new Date().toISOString(),
   });
   toast('Saved to My finds ★', 'ok');
@@ -1571,7 +1788,7 @@ function exportJSON() {
     generator: 'SkyShift (NASA SPHEREx Sky Time Machine)', created: new Date().toISOString(), target: { ...S.target, track: undefined },
     images: S.items.map(it => ({ obsid: obsId(it.f), detector: it.f.det, release: it.f.qr, file: S3 + frameKey(it.f), mjd: it.r.mjd, wavelength_um: it.r.wave })),
     photometry: (S.phot || []).map(p => ({ mjd: p.it.r.mjd, wavelength_um: p.it.r.wave, flux_mJy: p.m.uJy / 1000, err_mJy: p.m.err / 1000 })),
-    hunt: S.hunt ? S.hunt.list.map(d => ({ kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, snr: d.snr, known: d.known || null, confidence: d.conf || null, in2massOrWise: d.archive ?? null })) : null,
+    hunt: S.hunt ? S.hunt.list.map(d => ({ kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, snr: d.snr, known: d.known || null, confidence: d.conf || null, ruledOut: d.why || null, seenAgain: d.seen ?? null, companionsChecked: d.looks ?? null, in2massOrWise: d.archive ?? null })) : null,
     knownObjects: S.known.map(k => ({ name: k.obj.name, appearances: k.pts.length })),
     acknowledgement: 'This publication makes use of data products from SPHEREx, a joint project of JPL and Caltech funded by NASA. DOI 10.26131/IRSA652',
   };
@@ -1610,7 +1827,9 @@ function bindUI() {
     if (b.dataset.side === 'frames' && S) renderFrameGrid();
     if (b.dataset.side === 'measure' && S) measureAll();
   });
-  $('#huntBtn').onclick = hunt;
+  $('#huntBtn').onclick = () => hunt();
+  // checks that need the network finish by themselves once it is back
+  window.addEventListener('online', () => { if (S && S.hunt && S.hunt.list.some(d => d.conf === 'pending') && !$('#huntBtn').disabled) hunt(); });
   $('#tmSave').onclick = () => S && toggleSave();
   $('#tmShare').onclick = () => S && share();
   $('#loadMore').onclick = () => {
