@@ -368,3 +368,5 @@ dialog::backdrop { background: rgba(3, 5, 12, .6); backdrop-filter: blur(3px); }
 .install-opt.primary { background: linear-gradient(135deg, #66d9ff, #7b6cff); border: 0; color: #04102a; }
 .install-opt.primary span { color: #13224f; }
 .tiny { font-size: .68rem; word-break: break-all; }
+.install-more { margin-top: 10px; }
+.install-more summary { cursor: pointer; color: var(--muted); font-size: .85rem; padding: 6px 0; }
