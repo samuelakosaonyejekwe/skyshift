@@ -78,6 +78,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then echo "No Cloudflare token set; skipping."; exit 0; fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            # look the account up with the token itself
+            CLOUDFLARE_ACCOUNT_ID=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/accounts | python3 -c "import json,sys; r=json.load(sys.stdin).get('result') or []; print(r[0]['id'] if r else '')")
+            export CLOUDFLARE_ACCOUNT_ID
+            [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "Could not determine the Cloudflare account from the token"; exit 1; }
+          fi
           npx --yes wrangler@3 pages project create skyshift --production-branch main >/dev/null 2>&1 || true
           npx --yes wrangler@3 pages deploy site --project-name skyshift --branch main --commit-dirty=true
 
