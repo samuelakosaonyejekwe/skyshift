@@ -1,6 +1,7 @@
 # SkyShift · SPHEREx Sky Time Machine
 
-**Live app: https://samuelakosaonyejekwe.github.io/skyshift/**
+**Live app: https://samuelakosaonyejekwe.github.io/skyshift/**  
+**Backup (Cloudflare, independent of GitHub): https://skyshift.pages.dev/**
 
 A public web tool for the **2026 NASA Space Apps Challenge – "Planet X and SPHEREx"**.
 SkyShift shows real images of the sky from NASA's SPHEREx mission and makes it easy for
@@ -46,8 +47,9 @@ It installs like an app on any phone, tablet or computer, and keeps working offl
 * **Redundancy:** if any NASA service is down during a rebuild, the last good copy is restored
   automatically (live site → CDN mirror). If GitHub Pages or GitHub itself is unreachable, installed
   apps keep running from the offline cache and every data file (including the full sky index) falls
-  back to jsDelivr's global CDN. The repository also deploys as-is to Vercel or Netlify
-  (`vercel.json` / `netlify.toml`) as an independent second host that needs no build step.
+  back to jsDelivr's global CDN. Every refresh also publishes the complete site, data included, to
+  **Cloudflare Pages** (https://skyshift.pages.dev), a second host that keeps working even if GitHub
+  is down.
   The live archive features talk to NASA directly, so they keep working too.
 
 ## Install
