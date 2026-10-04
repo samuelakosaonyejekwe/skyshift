@@ -389,7 +389,7 @@ function liveCard(box, o) {
     btn.disabled = true; btn.textContent = 'Developing…';
     try {
       const r = await quicklook(o.key);
-      const l = R.levels(r.data, 'auto', [2, 99.5]);
+      const l = R.levels(r.data, 'sky', [2, 99.7]);
       R.paint(cv.getContext('2d'), r.w, R.scaleTo8(R.fillHoles(r.data, r.w), { lo: l.lo, hi: l.hi, stretch: 'asinh' }), 'inferno');
       pos.textContent = `${r.ra.toFixed(2)}°, ${r.dec.toFixed(2)}° · ${(r.date || '').replace('T', ' ').slice(0, 16)} UTC`;
       btn.hidden = true; openBtn.hidden = false;

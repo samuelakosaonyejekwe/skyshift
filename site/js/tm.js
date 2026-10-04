@@ -555,7 +555,7 @@ export function render() {
   setMsg(null);
   const hud = (tl, tr, bl, br) => { $('#hudTL').textContent = tl || ''; $('#hudTR').textContent = tr || ''; $('#hudBL').textContent = bl || ''; $('#hudBR').textContent = br || ''; };
   const drawMono = (ctx2, data, lv) => {
-    const l = lv || R.levels(data, 'auto', [1.5, 99.7]);
+    const l = lv || R.levels(data, 'sky', [1.5, 99.8]);
     R.paint(ctx2, M, R.scaleTo8(up(data), { lo: l.lo, hi: l.hi, stretch }), cmap);
   };
   const scaleBar = `${(N * 6.15 / 60).toFixed(1)}′ across`;
@@ -622,7 +622,7 @@ export function render() {
     const bl = ch([1, 2]) || ch([1, 2, 3]), gr = ch([3, 4]) || ch([2, 3, 4]), rd = ch([5, 6]) || ch([4, 5, 6]);
     const chans = [rd, gr, bl].map(x => x || bl || gr || rd);
     if (!chans[0]) return;
-    const to8 = d => { const l = R.levels(d, 'auto', [2, 99.6]); return R.scaleTo8(up(d), { lo: l.lo, hi: l.hi, stretch }); };
+    const to8 = d => { const l = R.levels(d, 'sky', [2, 99.7]); return R.scaleTo8(up(d), { lo: l.lo, hi: l.hi, stretch }); };
     R.paintRGB(c, M, to8(chans[0]), to8(chans[1]), to8(chans[2]));
     hud('False colour infrared', 'blue 0.75–1.6 µm · green 1.6–3.8 µm · red 3.8–5 µm', v === 'all' ? 'All visits' : visitLabel(+v.slice(1)), scaleBar);
     drawOverlay(null, {});
@@ -637,7 +637,7 @@ export function render() {
       Bv = { data: composite('match|' + sv.id, use) };
       label = `SPHEREx ${ws[0].toFixed(1)}–${ws[ws.length - 1].toFixed(1)} µm`;
     } else { Bv = selImage(bv); label = 'SPHEREx ' + (Bv ? Bv.label.replace(/\s*\(\d+ img\)/, '') : ''); }
-    if (Bv) drawMono(c, Bv.data, R.levels(Bv.data, 'auto', [25, 99.2]));
+    if (Bv) drawMono(c, Bv.data, R.levels(Bv.data, 'sky', [25, 99.6]));
     const tg = S.target.kind === 'mover' ? S.items[0].tgt : S.target;
     const first = S.items.reduce((a, it) => Math.min(a, it.r.mjd), 1e9), last = S.items.reduce((a, it) => Math.max(a, it.r.mjd), 0);
     hud(`◀ ${label} (${mjdToDate(first).getUTCFullYear()}${mjdToDate(last).getUTCFullYear() !== mjdToDate(first).getUTCFullYear() ? '–' + String(mjdToDate(last).getUTCFullYear()).slice(2) : ''})`, `${sv.short} (${sv.years}) ▶`, 'Drag the slider to compare then and now', scaleBar);
@@ -647,7 +647,7 @@ export function render() {
       if (!S || S.mode !== 'then' || S.refToken !== token) return;
       let d = $('#optBg').checked ? R.subtractBackground(ref, N, Math.max(20, N / 3)) : ref;
       d = R.fillHoles(d, N);
-      drawMono(cv2.getContext('2d'), d, R.levels(d, 'auto', [25, 99.2]));
+      drawMono(cv2.getContext('2d'), d, R.levels(d, 'sky', [25, 99.6]));
       cv2.hidden = false;
     }).catch(() => { if (S && S.mode === 'then') toast('Reference survey image unavailable right now (needs internet).', 'err'); });
     drawOverlay(null, {});
@@ -1244,7 +1244,7 @@ function renderFrameGrid() {
     const N = it.r.size;
     const c = h('canvas', { width: N, height: N });
     const d = derived(it).fill;
-    const l = R.levels(d, 'auto', [1.5, 99.7]);
+    const l = R.levels(d, 'sky', [1.5, 99.8]);
     R.paint(c.getContext('2d'), N, R.scaleTo8(d, { lo: l.lo, hi: l.hi, stretch: $('#optStretch').value }), $('#optCmap').value);
     g.append(h('button', { type: 'button', class: i === S.cur ? 'on' : '', title: `${fmtDate(it.r.mjd, true)} · ${it.r.wave.toFixed(3)} µm`, onclick: () => { setMode('movie'); S.cur = i; stop(); render(); } },
       c, h('span', { text: `${fmtDate(it.r.mjd).slice(2)} ${it.r.wave.toFixed(2)}µ` })));
@@ -1364,7 +1364,7 @@ function exportGIF() {
   const stretch = $('#optStretch').value;
   const frames = vis.map(it => {
     const d = derived(it).fill;
-    const l = R.levels(d, 'auto', [1.5, 99.7]);
+    const l = R.levels(d, 'sky', [1.5, 99.8]);
     const b = R.scaleTo8(d, { lo: l.lo, hi: l.hi, stretch });
     const up = new Uint8Array(M * M);
     for (let y = 0; y < M; y++) for (let x = 0; x < M; x++) up[y * M + x] = b[Math.floor(y / k) * N + Math.floor(x / k)];

@@ -73,6 +73,7 @@ jobs:
 
       # ---- independent second host (activates when its secret is set) ----
       - name: Deploy to Cloudflare Pages (second host)
+        continue-on-error: true   # a backup-host problem must never block the main site
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -82,12 +83,13 @@ jobs:
             # look the account up with the token itself
             CLOUDFLARE_ACCOUNT_ID=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/accounts | python3 -c "import json,sys; r=json.load(sys.stdin).get('result') or []; print(r[0]['id'] if r else '')")
             export CLOUDFLARE_ACCOUNT_ID
-            [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "Could not determine the Cloudflare account from the token"; exit 1; }
+            [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "::warning::Cloudflare account not found: add the CLOUDFLARE_ACCOUNT_ID secret (or give the token 'Account Settings: Read')"; exit 1; }
           fi
           npx --yes wrangler@3 pages project create skyshift --production-branch main >/dev/null 2>&1 || true
           npx --yes wrangler@3 pages deploy site --project-name skyshift --branch main --commit-dirty=true
 
       - name: Deploy to Netlify (second host)
+        continue-on-error: true
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}

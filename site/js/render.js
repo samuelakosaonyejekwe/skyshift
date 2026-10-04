@@ -60,6 +60,13 @@ export function levels(data, mode = 'auto', clip = [1, 99.7]) {
     const { sig } = robustStats(data);
     return { lo: -5 * sig, hi: 5 * sig };
   }
+  if (mode === 'sky') {
+    // astronomical display: black just below the sky level, so noise reads as
+    // a smooth dark background instead of blotches
+    const { med, sig } = robustStats(data);
+    const [hi] = percentiles(data, [clip[1]]);
+    return { lo: med - 1.5 * sig, hi: Math.max(hi, med + 8 * sig) };
+  }
   const [lo, hi] = percentiles(data, clip);
   return { lo, hi: hi > lo ? hi : lo + 1 };
 }

@@ -480,7 +480,7 @@ def fetch_movers(frames):
 # 4. Other NASA sources
 # --------------------------------------------------------------------------
 def fetch_exoplanets():
-    q = ("select hostname, ra, dec, sy_dist, sy_pnum, sy_kmag, st_spectype, disc_facility, pl_name "
+    q = ("select hostname, ra, dec, sy_pmra, sy_pmdec, sy_dist, sy_pnum, sy_kmag, st_spectype, disc_facility, pl_name "
          "from pscomppars")
     url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode({"query": q, "format": "csv"})
     rows = list(csv.reader(io.StringIO(http(url, timeout=300).decode("utf-8", "replace"))))
@@ -490,12 +490,22 @@ def fetch_exoplanets():
         d = dict(zip(hdr, r))
         h = hosts.get(d["hostname"])
         if not h:
-            def num(x):
+            def num(x, nd=3):
                 try:
-                    return round(float(x), 3)
+                    return round(float(x), nd)
                 except ValueError:
                     return None
-            h = hosts[d["hostname"]] = [d["hostname"], num(d["ra"]), num(d["dec"]), num(d["sy_dist"]),
+            ra, dec = num(d["ra"], 7), num(d["dec"], 7)
+            # move to the current epoch using the archive's proper motions
+            # (positions are Gaia-based, epoch ~J2016.0)
+            pmra, pmdec = num(d.get("sy_pmra", "")), num(d.get("sy_pmdec", ""))
+            if ra is not None and dec is not None and pmra is not None and pmdec is not None:
+                yrs = (now_mjd() - 57388.5) / 365.25
+                dec_new = dec + pmdec * yrs / 3.6e6
+                ra = (ra + pmra * yrs / 3.6e6 / max(0.01, math.cos(math.radians(dec)))) % 360
+                dec = dec_new
+                ra, dec = round(ra, 6), round(dec, 6)
+            h = hosts[d["hostname"]] = [d["hostname"], ra, dec, num(d["sy_dist"]),
                                         int(float(d["sy_pnum"] or 0)), num(d["sy_kmag"]), d["st_spectype"], []]
         h[7].append(d["pl_name"])
     data = [h for h in hosts.values() if h[1] is not None and h[2] is not None]
