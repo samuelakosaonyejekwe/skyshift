@@ -47,6 +47,11 @@ jobs:
             https://raw.githubusercontent.com/${{ github.repository }}/data/
         run: python3 tools/build_data.py site/data
 
+      - name: Minify app code for fast loading
+        run: |
+          npx --yes esbuild@0.23.1 site/js/*.js --minify --outdir=site/js --allow-overwrite --log-level=warning
+          npx --yes esbuild@0.23.1 site/css/app.css --minify --outfile=site/css/app.css --allow-overwrite --log-level=warning
+
       - name: Stamp app version (changes only when app code changes)
         run: |
           v=$(find site -path site/data -prune -o -type f -print | sort | xargs sha1sum | sha1sum | cut -c1-12)

@@ -1,5 +1,5 @@
 // SkyShift - application shell.
-import { $, $$, h, toast, fmtInt, fmtDate, fmtShortDate, ago, fmtBytes, parseCoords, debounce, download, waveColor } from './util.js';
+import { $, $$, h, toast, fmtInt, fmtDate, fmtShortDate, ago, fmtBytes, parseCoords, debounce, download, waveColor, slug } from './util.js';
 import { getJSON, getMeta, latestPeriods, s3List, parseKey, liveNews, liveImages, resolveName } from './data.js';
 import { SkyMap } from './sky.js';
 import { BANDS, frameKey } from './fits.js';
@@ -31,7 +31,6 @@ const FEATURED = [
   { name: 'Whirlpool Galaxy (M51)', ra: 202.4696, dec: 47.1952, tag: 'Spiral galaxy', info: 'A face-on spiral interacting with a companion galaxy.' },
   { name: 'Pleiades (M45)', ra: 56.75, dec: 24.1167, tag: 'Star cluster', info: 'The Seven Sisters: young hot stars in a dusty veil.' },
 ];
-const refThumb = (ra, dec, fov = 0.5) => `https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=CDS%2FP%2F2MASS%2Fcolor&width=240&height=160&fov=${fov}&projection=TAN&coordsys=icrs&ra=${ra}&dec=${dec}&format=jpg`;
 
 // ------------------------------------------------------------------ settings
 const settings = {
@@ -157,6 +156,9 @@ async function initExplore() {
     sky.points.targets = FEATURED.map(f => ({ ...f, label: false }));
     $('#zoomIn').onclick = () => sky.setZoom(sky.zoom * 1.5);
     $('#zoomOut').onclick = () => sky.setZoom(sky.zoom / 1.5);
+    const lb = $('#layersBtn'), lm = $('#mapLayers');
+    lb.onclick = e => { e.stopPropagation(); lm.hidden = !lm.hidden; lb.setAttribute('aria-expanded', !lm.hidden); };
+    document.addEventListener('click', e => { if (!e.target.closest('#mapLayers') && e.target !== lb) { lm.hidden = true; lb.setAttribute('aria-expanded', 'false'); } });
     $$('#mapLayers input').forEach(i => i.addEventListener('change', async () => {
       sky.layers[i.dataset.layer] = i.checked;
       if (i.dataset.layer === 'exo' && i.checked) await loadExo();
@@ -200,17 +202,16 @@ function renderFeatured() {
       h('div', { class: 'thumb' }), h('span', { class: 'tag', text: f.tag }), h('b', { text: f.name }), h('p', { text: f.info }));
     box.append(card);
   }
-  // lazy thumbnails (2MASS, NASA/IPAC) only when online and visible
-  if (navigator.onLine && 'IntersectionObserver' in window) {
+  // pre-made thumbnails (NASA/IPAC 2MASS), loaded as cards scroll into view
+  const setThumb = (el, f) => { el.firstElementChild.style.backgroundImage = `url("img/thumbs/${slug(f.name)}.webp")`; };
+  if ('IntersectionObserver' in window) {
     const io = new IntersectionObserver(es => es.forEach(e => {
       if (!e.isIntersecting) return;
-      const i = [...box.children].indexOf(e.target);
-      const f = FEATURED[i];
-      e.target.firstElementChild.style.backgroundImage = `url("${refThumb(f.ra, f.dec, /Pole|Galaxy \(M31|Cygnus|Ophiuchi|Pleiades/.test(f.name) ? 1.5 : 0.4)}")`;
+      setThumb(e.target, FEATURED[[...box.children].indexOf(e.target)]);
       io.unobserve(e.target);
-    }), { rootMargin: '200px' });
+    }), { rootMargin: '300px' });
     [...box.children].forEach(c => io.observe(c));
-  }
+  } else [...box.children].forEach((c, i) => setThumb(c, FEATURED[i]));
   withMovers().then(ms => renderMoverCards($('#featuredMovers'), ms.slice(0, 8)));
 }
 async function withMovers() {

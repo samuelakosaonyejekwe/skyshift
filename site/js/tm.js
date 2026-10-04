@@ -83,6 +83,9 @@ for (let h = 0; h < 65536; h++) {
 }
 async function loadPack(key) {
   if (ctx.settings.size !== 64 || ctx.settings.mask) return null;
+  // only ask for packs that exist (avoids slow misses across the mirrors)
+  const meta = await getJSON('meta.json').catch(() => null);
+  if (meta && Array.isArray(meta.packs) && !meta.packs.includes(key)) return null;
   try {
     const buf = await getBin(`packs/${key}.bin`, { timeout: 12000 });
     const dv = new DataView(buf);

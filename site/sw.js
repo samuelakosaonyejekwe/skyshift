@@ -8,7 +8,8 @@ const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/tm.js', 'js/fits.js', 'js/worker.js', 'js/data.js', 'js/render.js', 'js/sky.js',
   'js/orbits.js', 'js/charts.js', 'js/gif.js', 'js/store.js', 'js/util.js',
-  'img/allsky.jpg', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
+  'img/allsky.webp', 'img/allsky-1000.webp',
+  ...['orion-nebula-m42', 'north-ecliptic-pole-deep-field', 'south-ecliptic-pole-deep-field', 'barnard-s-star', 'wise-0855-0714', 'luhman-16-brown-dwarfs', 'proxima-centauri', 'galactic-centre-sgr-a', 'cygnus-x-dr21', 'rho-ophiuchi-cloud', 'eagle-nebula-pillars-of-creation', 'andromeda-galaxy-m31', '30-doradus-tarantula', 'v1647-ori-mcneil-s-nebula', 'herbig-haro-1-2', 'eta-carinae', 'crab-nebula-m1', 'boyajian-s-star', 'whirlpool-galaxy-m51', 'pleiades-m45'].map(n => `img/thumbs/${n}.webp`), 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
 ];
 const DATA_WARM = ['data/meta.json', 'data/coverage.json', 'data/movers.json', 'data/exoplanets.json', 'data/news.json', 'data/images.json', 'data/cad.json', 'data/ephem.json'];
 

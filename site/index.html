@@ -24,6 +24,16 @@
 <meta property="og:type" content="website">
 <link rel="stylesheet" href="css/app.css">
 <link rel="modulepreload" href="js/app.js">
+<link rel="modulepreload" href="js/tm.js">
+<link rel="modulepreload" href="js/fits.js">
+<link rel="modulepreload" href="js/data.js">
+<link rel="modulepreload" href="js/render.js">
+<link rel="modulepreload" href="js/sky.js">
+<link rel="modulepreload" href="js/orbits.js">
+<link rel="modulepreload" href="js/charts.js">
+<link rel="modulepreload" href="js/gif.js">
+<link rel="modulepreload" href="js/store.js">
+<link rel="modulepreload" href="js/util.js">
 <script type="module" src="js/app.js"></script>
 </head>
 <body>
@@ -69,21 +79,27 @@
       <div class="hero-stats" id="heroStats" aria-live="polite"></div>
     </div>
   </div>
-  <div class="card map-card">
+  <div class="map-card">
     <div class="map-toolbar">
       <div class="seg" role="radiogroup" aria-label="Map colouring">
         <button type="button" class="on" data-mapmode="counts" role="radio" aria-checked="true">Times observed</button>
         <button type="button" data-mapmode="recent" role="radio" aria-checked="false">Most recent</button>
       </div>
-      <div class="chips" id="mapLayers" aria-label="Map layers">
-        <label><input type="checkbox" data-layer="sky" checked> Infrared sky</label>
-        <label><input type="checkbox" data-layer="coverage" checked> SPHEREx coverage</label>
-        <label><input type="checkbox" data-layer="targets" checked> Featured</label>
-        <label><input type="checkbox" data-layer="live" checked> Newest frames</label>
-        <label><input type="checkbox" data-layer="exo"> Exoplanet hosts</label>
-        <label><input type="checkbox" data-layer="galactic"> Galactic plane</label>
-        <label><input type="checkbox" data-layer="ecliptic" checked> Ecliptic</label>
-        <label><input type="checkbox" data-layer="grid" checked> Grid</label>
+      <div class="menu-wrap">
+        <button class="btn layers-btn" id="layersBtn" type="button" aria-haspopup="true" aria-expanded="false"><svg class="ic"><use href="#i-globe"/></svg><span>Layers</span></button>
+        <div class="menu layers-menu" id="mapLayers" hidden role="menu">
+          <p class="menu-h">Sky</p>
+          <label><input type="checkbox" data-layer="sky" checked> Infrared sky photo</label>
+          <label><input type="checkbox" data-layer="coverage" checked> SPHEREx coverage glow</label>
+          <p class="menu-h">Markers</p>
+          <label><input type="checkbox" data-layer="targets" checked> Featured targets</label>
+          <label><input type="checkbox" data-layer="live" checked> Newest frames</label>
+          <label><input type="checkbox" data-layer="exo"> Exoplanet host stars</label>
+          <p class="menu-h">Guides</p>
+          <label><input type="checkbox" data-layer="ecliptic" checked> Ecliptic (planets' path)</label>
+          <label><input type="checkbox" data-layer="galactic"> Galactic plane</label>
+          <label><input type="checkbox" data-layer="grid" checked> Coordinate grid</label>
+        </div>
       </div>
     </div>
     <div class="map-wrap">

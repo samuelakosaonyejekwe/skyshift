@@ -331,7 +331,24 @@ dialog::backdrop { background: rgba(3, 5, 12, .6); backdrop-filter: blur(3px); }
   .map-zoom { right: 4px; top: 4px; gap: 4px; }
   .map-zoom .icon-btn { width: 30px; height: 30px; font-size: 1rem; }
 }
-/* whole sky visible without scrolling: width follows the available screen height */
-@media (min-width: 701px) {
-  .map-card { max-width: min(1080px, calc((100vh - 230px) * 2 + 24px)); min-width: min(100%, 560px); }
-}
+
+
+/* ---------- sky map, visual pass ---------- */
+.map-card { max-width: 1180px !important; min-width: 0 !important; margin: 0 auto 16px; padding: 14px 14px 10px; border: 0; border-radius: 20px;
+  background: radial-gradient(70% 90% at 50% 45%, rgba(40, 60, 140, .28) 0%, rgba(8, 11, 30, 0) 70%), linear-gradient(180deg, #0a0e24, #060816) !important;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(120, 150, 255, .10); }
+.map-toolbar { justify-content: space-between; margin-bottom: 6px; }
+.map-card .seg { background: rgba(20, 28, 64, .7); border-color: rgba(120, 150, 255, .18); }
+.map-card .seg button { color: #aab6e0; }
+.map-card .seg button.on { background: rgba(255, 255, 255, .1); color: #fff; }
+.layers-btn { background: rgba(20, 28, 64, .7); border-color: rgba(120, 150, 255, .18); color: #e9ecf8; }
+.layers-menu { min-width: 250px; padding: 8px 10px; background: rgba(12, 16, 40, .97); border-color: rgba(120, 150, 255, .2); color: #e9ecf8; backdrop-filter: blur(10px); }
+.layers-menu label { display: flex; gap: 10px; align-items: center; padding: 7px 6px; border-radius: 8px; cursor: pointer; font-size: .88rem; }
+.layers-menu label:hover { background: rgba(255, 255, 255, .06); }
+.layers-menu input { accent-color: var(--accent); width: 16px; height: 16px; }
+.menu-h { margin: 8px 6px 2px; font-size: .66rem; text-transform: uppercase; letter-spacing: .14em; color: #8f9cc8; }
+.map-wrap { max-width: min(100%, calc((100vh - 210px) * 2)); min-width: min(100%, 520px); margin: 0 auto; }
+.map-legend { background: rgba(8, 12, 32, .55); border: 1px solid rgba(120, 150, 255, .18); backdrop-filter: blur(8px); border-radius: 999px; padding: 4px 12px; color: #c9d3f5; }
+.map-legend i { background: linear-gradient(90deg, #20125a, #462896, #2870c8, #3cbebe, #aae678, #fff08c); }
+.map-zoom .icon-btn { background: rgba(12, 16, 40, .7); border-color: rgba(120, 150, 255, .2); color: #e9ecf8; backdrop-filter: blur(8px); }
+.map-card .hint { text-align: center; color: #9aa7d0; max-width: 820px; margin: 10px auto 0; }

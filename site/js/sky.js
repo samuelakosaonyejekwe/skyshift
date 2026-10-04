@@ -66,7 +66,7 @@ export class SkyMap {
     this.layers = { sky: true, coverage: true, grid: true, galactic: false, ecliptic: true, targets: true, exo: false, live: true };
     this.skyImg = new Image();
     this.skyImg.onload = () => { this.bg = null; this.draw(); };
-    this.skyImg.src = new URL('../img/allsky.jpg', import.meta.url).href;
+    this.skyImg.src = new URL(window.innerWidth < 900 ? '../img/allsky-1000.webp' : '../img/allsky.webp', import.meta.url).href;
     this.mode = 'counts';
     this.points = { targets: [], exo: [], live: [], marker: null };
     this.zoom = 1; this.cx = 0; this.cy = 0;
@@ -148,7 +148,7 @@ export class SkyMap {
         return (a(x0, y0) * (1 - fx) + a(x0 + 1, y0) * fx) * (1 - fy) + (a(x0, y1) * (1 - fx) + a(x0 + 1, y1) * fx) * fy;
       };
       const solid = !this.layers.sky;            // without the sky photo, draw it opaque
-      const step = W > 1400 ? 2 : 1;
+      const step = 2;   // the glow is smooth anyway: half resolution renders 4x faster
       for (let py = 0; py < H; py += step) for (let px = 0; px < W; px += step) {
         const s = this.pick(px, py);
         if (!s) continue;
@@ -160,8 +160,8 @@ export class SkyMap {
           const v = sample(cov.lastDay, s[0], s[1]);
           t = v ? 1 - Math.min(1, Math.max(0, (cov.nowDay - v) / (cov.nowDay - cov.minDay || 1))) : 0;
         }
-        const rgb = ramp(solid ? 0.1 + 0.9 * t : 0.1 + 0.76 * t);   // overlay tops out at gold, not white
-        const alpha = solid ? 255 : Math.round(28 + 100 * t);
+        const rgb = ramp(solid ? 0.1 + 0.9 * t : 0.12 + 0.72 * t);   // overlay tops out at gold, not white
+        const alpha = solid ? 255 : Math.round(18 + 150 * Math.min(t, 0.72) ** 2);   // deep fields glow softly, sky stays visible
         for (let yy = 0; yy < step; yy++) for (let xx = 0; xx < step; xx++) {
           const i = ((py + yy) * W + px + xx) * 4;
           d[i] = rgb[0]; d[i + 1] = rgb[1]; d[i + 2] = rgb[2]; d[i + 3] = alpha;
@@ -205,7 +205,10 @@ export class SkyMap {
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(this.skyImg, x0, y0, x1 - x0, y1 - y0);
     }
+    // screen blend keeps the photo's detail visible through the coverage glow
+    if (this.layers.sky) ctx.globalCompositeOperation = 'screen';
     ctx.drawImage(this.bg, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
     // soft rim
     ctx.save();
@@ -219,14 +222,14 @@ export class SkyMap {
     if (this.layers.grid) {
       for (let dec = -60; dec <= 60; dec += 30) {
         const pts = []; for (let ra = 0; ra <= 360; ra += 2) pts.push([ra, dec]);
-        this.line(pts, 'rgba(160,180,255,0.16)');
+        this.line(pts, 'rgba(170,190,255,0.09)');
       }
       for (let ra = 0; ra < 360; ra += 30) {
         const pts = []; for (let dec = -90; dec <= 90; dec += 2) pts.push([ra + 1e-6, dec]);
-        this.line(pts, 'rgba(160,180,255,0.16)');
+        this.line(pts, 'rgba(170,190,255,0.09)');
       }
-      ctx.fillStyle = 'rgba(200,210,255,0.55)';
-      ctx.font = `${10 * dpr}px system-ui, sans-serif`;
+      ctx.fillStyle = 'rgba(200,215,255,0.45)';
+      ctx.font = `600 ${9.5 * dpr}px system-ui, sans-serif`;
       for (let h = 0; h < 24; h += 4) {
         const p = this.sky(h * 15 + 0.01, 0);
         ctx.fillText(h + 'h', p[0] + 3 * dpr, p[1] - 3 * dpr);
@@ -240,7 +243,7 @@ export class SkyMap {
     }
     if (this.layers.ecliptic) {
       const pts = []; for (let l = 0; l <= 360; l += 1) pts.push(eclToEq(l, 0));
-      this.line(pts, 'rgba(120,220,255,0.65)', 1.2, [2, 4]);
+      this.line(pts, 'rgba(120,220,255,0.55)', 1.1, [1.5, 5]);
     }
     const dot = (ra, dec, r, fill, stroke) => {
       const p = this.sky(ra, dec);
@@ -250,12 +253,34 @@ export class SkyMap {
       return p;
     };
     if (this.layers.exo) for (const e of this.points.exo) dot(e[1], e[2], 1.4, 'rgba(140,255,170,0.75)');
-    if (this.layers.live) for (const e of this.points.live) dot(e.ra, e.dec, 3.2, 'rgba(255,80,120,0.9)', '#fff');
+    const sparkle = (ra, dec, r, core, glow) => {
+      const p = this.sky(ra, dec);
+      ctx.save();
+      ctx.shadowColor = glow; ctx.shadowBlur = 10 * dpr;
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      const R = r * dpr, q = R * 0.28;
+      ctx.moveTo(p[0], p[1] - R); ctx.quadraticCurveTo(p[0] + q, p[1] - q, p[0] + R, p[1]);
+      ctx.quadraticCurveTo(p[0] + q, p[1] + q, p[0], p[1] + R); ctx.quadraticCurveTo(p[0] - q, p[1] + q, p[0] - R, p[1]);
+      ctx.quadraticCurveTo(p[0] - q, p[1] - q, p[0], p[1] - R);
+      ctx.fill();
+      ctx.beginPath(); ctx.arc(p[0], p[1], 1.6 * dpr, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.restore();
+      return p;
+    };
+    if (this.layers.live) for (const e of this.points.live) {
+      const p = this.sky(e.ra, e.dec);
+      ctx.save(); ctx.shadowColor = 'rgba(255,90,140,.9)'; ctx.shadowBlur = 10 * dpr;
+      ctx.strokeStyle = 'rgba(255,120,160,.95)'; ctx.lineWidth = 1.6 * dpr;
+      ctx.beginPath(); ctx.arc(p[0], p[1], 4.5 * dpr, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p[0], p[1], 1.6 * dpr, 0, 7); ctx.fillStyle = '#fff'; ctx.fill();
+      ctx.restore();
+    }
     if (this.layers.targets) {
-      ctx.font = `${11 * dpr}px system-ui, sans-serif`;
+      ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
       for (const t of this.points.targets) {
-        const p = dot(t.ra, t.dec, 3.5, '#ffd34d', '#2a1b00');
-        if (this.zoom > 1.6 || t.label) { ctx.fillStyle = '#ffe9a3'; ctx.fillText(t.name, p[0] + 6 * dpr, p[1] + 4 * dpr); }
+        const p = sparkle(t.ra, t.dec, 6.5, '#ffd34d', 'rgba(255,190,80,.95)');
+        if (this.zoom > 1.6 || t.label) { ctx.fillStyle = '#ffe9a3'; ctx.shadowColor = '#000'; ctx.shadowBlur = 4 * dpr; ctx.fillText(t.name, p[0] + 9 * dpr, p[1] + 4 * dpr); ctx.shadowBlur = 0; }
       }
     }
     if (this.points.marker) {
