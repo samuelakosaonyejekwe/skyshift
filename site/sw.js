@@ -13,6 +13,7 @@ const ASSETS = [
 const DATA_WARM = ['data/meta.json', 'data/coverage.json', 'data/movers.json', 'data/exoplanets.json', 'data/news.json', 'data/images.json', 'data/cad.json', 'data/ephem.json'];
 
 self.addEventListener('install', e => {
+  self.skipWaiting();   // new versions take over immediately
   e.waitUntil((async () => {
     const c = await caches.open(SHELL);
     await c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' })));
@@ -43,7 +44,7 @@ async function networkFirst(req, cacheName, ms, preload) {
     if (r) return r;
     throw new Error('no response');
   } catch {
-    const hit = await c.match(req, { ignoreSearch: true }) || await caches.match('index.html');
+    const hit = await c.match(req, { ignoreSearch: true }) || (req.mode === 'navigate' ? await caches.match('index.html') : null);
     return hit || Response.error();
   }
 }
@@ -81,7 +82,8 @@ self.addEventListener('fetch', e => {
       e.respondWith(staleWhileRevalidate(e, DATA, key));
       return;
     }
-    e.respondWith(staleWhileRevalidate(e, SHELL));
+    // app code: newest from the network when online, offline copy otherwise
+    e.respondWith(networkFirst(req, SHELL, 3000));
     return;
   }
   // redundant mirrors of the data branch

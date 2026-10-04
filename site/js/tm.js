@@ -437,7 +437,7 @@ function derived(it) {
   const bg = $('#optBg').checked;
   if (!d || d.bg !== bg) {
     const base = bg ? R.subtractBackground(it.r.data, it.r.size, Math.max(12, it.r.size / 6)) : it.r.data;
-    d = { bg, base, fill: R.fillHoles(base, it.r.size) };
+    d = { bg, base, fill: R.fillHoles(base, it.r.size, 24) };
     S.cache.set(it, d);
   }
   return d;

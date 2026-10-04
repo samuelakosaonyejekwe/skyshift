@@ -570,7 +570,14 @@ function registerSW() {
   // reload only when an updated worker replaces an existing one (not on first install)
   const hadController = !!navigator.serviceWorker.controller;
   let reloaded = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded) return;
+    reloaded = true;
+    // apply the update right away unless images are still streaming in
+    const busy = () => !document.querySelector('#progress')?.hidden;
+    const go = () => (busy() ? setTimeout(go, 2000) : location.reload());
+    go();
+  });
 }
 
 // ------------------------------------------------------------------ settings, tour, keys
