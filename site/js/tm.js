@@ -826,7 +826,7 @@ function drawOverlay(it, extra = {}) {
       if (it && d.mjd != null && Math.abs(d.mjd - it.r.mjd) > 1e-4 && d.kind !== 'change') continue;
       if (!it && !extra.diff && d.kind !== 'change') continue;
       const [x, y] = P(d.x, d.y);
-      g.strokeStyle = d.known ? 'rgba(94,230,160,.95)' : d.kind === 'change' ? 'rgba(102,217,255,.95)' : 'rgba(255,179,71,1)';
+      g.strokeStyle = d.known ? 'rgba(94,230,160,.95)' : d.kind === 'change' ? 'rgba(102,217,255,.95)' : d.conf === 'var' || d.conf === 'neb' ? 'rgba(255,209,102,.6)' : 'rgba(255,179,71,1)';
       g.lineWidth = (d === S.hunt.sel ? 3 : 1.6) * dpr;
       g.beginPath(); g.rect(x - 7 * dpr, y - 7 * dpr, 14 * dpr, 14 * dpr); g.stroke();
     }
@@ -1035,15 +1035,21 @@ async function hunt() {
       const a = normed.get(it), res = new Float32Array(N * N);
       for (let i = 0; i < res.length; i++) res[i] = a[i] - refArr[i];
       const { sig: rs } = R.robustStats(res);
+      const { sig: refSig } = R.robustStats(refArr);
       for (const p of R.findPeaks(res, N, 8, 10, 5)) {
         const k = Math.round(p.y) * N + Math.round(p.x);
         const v = a[k], ref = refArr[k];
-        // must be a clear point source here, essentially absent in the reference
-        if (!(v > 8) || !(ref < 0.25 * v) || !(res[k] > 8 * rs)) continue;
-        // reject the halos, ghosts and saturation of bright stars
+        // must be a clear point source here, essentially absent in the reference.
+        // Noise is measured locally: in nebulae the residuals are far rougher
+        // than the image-wide average, and knots would otherwise pass as sources.
+        const lrs = localSig(res, N, p.x, p.y);
+        if (!(v > 8) || !(ref < 0.25 * v) || !(res[k] > 8 * Math.max(rs, lrs))) continue;
+        // reject the halos and saturation of bright stars (ghosts and cosmic rays
+        // are caught by SPHEREx's own flags below).  A bright source on empty sky
+        // is kept: that is exactly what a bright asteroid or comet looks like.
         let refMax = 0;
         for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) { const q = refArr[k + dy * N + dx]; if (q > refMax) refMax = q; }
-        if (refMax > 40 || p.snr > 400) continue;
+        if (refMax > 40) continue;
         // no masked/blank pixels nearby (detector edges, bad pixels)
         let holes = 0;
         for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (!Number.isFinite(it.r.data[k + dy * N + dx])) holes++;
@@ -1058,7 +1064,9 @@ async function hunt() {
         }
         const comp = c7 > 0 ? c3 / c7 : 0;
         if (comp < 0.45) continue;
-        list.push({ kind: 'mover', x: p.x, y: p.y, snr: p.snr, mjd: it.r.mjd, it, wave: it.r.wave, comp });
+        // bright, structured nebulosity around it (in the multi-epoch reference)
+        const neb = localSig(refArr, N, p.x, p.y) / refSig > 4;
+        list.push({ kind: 'mover', x: p.x, y: p.y, snr: res[k] / Math.max(rs, lrs), mjd: it.r.mjd, it, wave: it.r.wave, comp, neb });
       }
     }
   }
@@ -1131,7 +1139,8 @@ async function hunt() {
       }
       if (sat || agree < need) continue;
       seen.push(c);
-      changes.push({ kind: 'change', x: c.x, y: c.y, snr: Math.abs(dsum / agree), sign: c.sign, votes: agree, conf: 'high' });
+      const neb = bandPairs.some(bp => localSig(bp.A, N, c.x, c.y) / R.robustStats(bp.A).sig > 4);
+      changes.push({ kind: 'change', x: c.x, y: c.y, snr: Math.abs(dsum / agree), sign: c.sign, votes: agree, neb });
     }
   }
   // 4) cross-match with known objects
@@ -1152,7 +1161,8 @@ async function hunt() {
   }
   // 5) verify unexplained candidates against SPHEREx's own pixel-quality flags
   //    (cosmic rays, hot/bad pixels, ghosts, persistence, outliers)
-  const toCheck = list.filter(d => !d.known).slice(0, 40);
+  //    Only star-shaped, strong detections can become "verified", so those go first.
+  const toCheck = list.filter(d => !d.known && d.comp >= 0.55 && d.snr >= 9).sort((a, b) => b.snr - a.snr).slice(0, 40);
   if (toCheck.length && navigator.onLine) {
     btn.lastChild.textContent = ` Verifying ${toCheck.length} candidates…`;
     const byFrame = new Map();
@@ -1169,15 +1179,77 @@ async function hunt() {
       g.ds.forEach((d, i) => { d.flagBits = bits[i]; d.verified = bits[i] === 0 ? true : bits[i] > 0 ? false : null; });
     }));
   }
-  for (const d of list) d.conf = d.known ? 'known' : (d.verified === true && d.comp >= 0.55 && d.snr >= 9) ? 'high' : 'low';
+  // 6) archive check: was something already at this spot in 2MASS (1997-2001)
+  //    or WISE/NEOWISE (2010-2020)?  A new body (asteroid, distant planet) is
+  //    absent there; a variable young star or a nebular knot is not.
+  const strict = list.filter(d => !d.known && d.verified === true && d.comp >= 0.55 && d.snr >= 9);
+  const ctr = S.target.kind === 'fixed' ? S.target : S.items[0].tgt;
+  for (const c of changes) { const sky = pixToSky(ctr, c.x, c.y, N); c.ra = sky[0]; c.dec = sky[1]; c.tgt = ctr; }
+  await archiveCheck([...strict, ...changes], N, btn);
+  for (const d of list) d.conf = d.known ? 'known' : !strict.includes(d) ? 'low' : d.archive ? 'var' : d.neb ? 'neb' : 'high';
+  for (const c of changes) c.conf = c.archive ? 'var' : c.neb ? 'neb' : 'high';
   // a tracklet only counts if every detection in it is verified or a known object
   for (let i = tracks.length - 1; i >= 0; i--) if ([tracks[i].a, tracks[i].b, tracks[i].c].some(d => d.conf === 'low')) tracks.splice(i, 1);
-  for (const c of changes) { const sky = pixToSky(S.target.kind === 'fixed' ? S.target : S.items[0].tgt, c.x, c.y, N); c.ra = sky[0]; c.dec = sky[1]; }
   const all = [...list.sort((a, b) => (a.known ? 1 : 0) - (b.known ? 1 : 0) || b.snr - a.snr), ...changes];
   S.hunt = { list: all, tracks, sel: null };
   renderHunt();
   btn.disabled = false; btn.lastChild.textContent = ' Scan again';
   render();
+}
+
+// robust noise in an annulus (4-10 px) around (x, y), ignoring the source itself
+function localSig(arr, N, x, y) {
+  const v = [], cx = Math.round(x), cy = Math.round(y);
+  for (let dy = -10; dy <= 10; dy++) for (let dx = -10; dx <= 10; dx++) {
+    const r = Math.hypot(dx, dy), xx = cx + dx, yy = cy + dy;
+    if (r < 4 || r > 10 || xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+    const q = arr[yy * N + xx];
+    if (Number.isFinite(q)) v.push(q);
+  }
+  if (v.length < 30) return 0;
+  v.sort((a, b) => a - b);
+  return (v[Math.floor(v.length * 0.8413)] - v[Math.floor(v.length * 0.1587)]) / 2;
+}
+
+// Is there a source at each candidate in 2MASS Ks or unWISE W1?  Both are fetched
+// on our exact pixel grid (cached, ~16 kB each).  d.archive = true / false, or
+// left undefined when the archive images could not be fetched (offline).
+const ARCHIVE = ['CDS/P/2MASS/K', 'CDS/P/unWISE/W1'];
+async function archiveCheck(ds, N, btn) {
+  if (!ds.length || !navigator.onLine) return;
+  btn.lastChild.textContent = ' Checking 2MASS and WISE archives…';
+  const groups = new Map();
+  for (const d of ds) {
+    const tg = d.tgt || d.it.tgt, key = `${tg.ra.toFixed(5)}|${tg.dec.toFixed(5)}`;
+    if (!groups.has(key)) groups.set(key, { tg, ds: [] });
+    groups.get(key).ds.push(d);
+  }
+  await Promise.all([...groups.values()].map(async g => {
+    const imgs = (await Promise.all(ARCHIVE.map(id => refImage(REF_SURVEYS.find(r => r.id === id), g.tg, N).catch(() => null)))).filter(Boolean);
+    if (!imgs.length) return;
+    const st = imgs.map(im => R.robustStats(im));
+    // top 1% of the field: bright or saturated stars, where a local test fails
+    const top = imgs.map(im => { const v = im.filter(Number.isFinite).sort((a, b) => a - b); return v[Math.floor(v.length * 0.99)]; });
+    for (const d of g.ds) {
+      d.archive = imgs.some((im, i) => {
+        // brightest pixel within 1 px vs the local background around it
+        let pk = -Infinity;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = Math.round(d.x) + dx, yy = Math.round(d.y) + dy;
+          if (xx >= 0 && yy >= 0 && xx < N && yy < N && im[yy * N + xx] > pk) pk = im[yy * N + xx];
+        }
+        const ann = [];
+        for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+          const r = Math.hypot(dx, dy), xx = Math.round(d.x) + dx, yy = Math.round(d.y) + dy;
+          if (r >= 3 && r <= 6 && xx >= 0 && yy >= 0 && xx < N && yy < N && Number.isFinite(im[yy * N + xx])) ann.push(im[yy * N + xx]);
+        }
+        if (pk >= top[i]) return true;
+        if (ann.length < 20) return false;
+        ann.sort((a, b) => a - b);
+        return pk - ann[ann.length >> 1] > 5 * Math.max(st[i].sig, localSig(im, N, d.x, d.y));
+      });
+    }
+  }));
 }
 
 function pixToSky(c, x, y, N) {
@@ -1189,8 +1261,11 @@ function renderHunt() {
   const out = $('#huntOut');
   out.textContent = '';
   const H = S.hunt;
-  const nk = H.list.filter(d => d.known).length, nc = H.list.filter(d => d.conf === 'high').length, nch = H.list.filter(d => d.kind === 'change').length;
-  out.append(h('p', { class: 'small' }, h('b', { text: `${nk} known objects · ${nc} verified unexplained source${nc === 1 ? '' : 's'} · ${nch} changes between visits · ${H.tracks.length} moving tracklet${H.tracks.length === 1 ? '' : 's'}` })));
+  const nk = H.list.filter(d => d.known).length, nc = H.list.filter(d => d.kind !== 'change' && d.conf === 'high').length, nch = H.list.filter(d => d.kind === 'change').length;
+  const nchv = H.list.filter(d => d.kind === 'change' && d.archive).length;
+  const nv = H.list.filter(d => d.kind !== 'change' && (d.conf === 'var' || d.conf === 'neb')).length;
+  out.append(h('p', { class: 'small' }, h('b', { text: `${nk} known objects · ${nc} verified unexplained source${nc === 1 ? '' : 's'} · ${nch} change${nch === 1 ? '' : 's'} between visits${nchv ? ` (${nchv} at known stars)` : ''} · ${H.tracks.length} moving tracklet${H.tracks.length === 1 ? '' : 's'}` }),
+    nv ? h('span', { class: 'muted', text: ` · ${nv} explained by an archive star or nebula` }) : null));
   if (H.tracks.length) {
     out.append(h('h3', { text: 'Moving tracklets (3+ detections in a line)' }));
     for (const t of H.tracks.slice(0, 10)) {
@@ -1207,22 +1282,26 @@ function renderHunt() {
   }
   for (const d of shown.slice(0, 80)) {
     const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: 'pill change', text: d.sign > 0 ? 'BRIGHTER' : 'FAINTER' })
-      : d.conf === 'high' ? h('span', { class: 'pill cand', title: 'Star-shaped, clean pixels in SPHEREx quality flags, high S/N', text: 'VERIFIED ✓' }) : h('span', { class: 'pill', title: d.flagBits > 0 ? 'SPHEREx quality flags mark these pixels' : 'Weak or not verified', text: d.flagBits > 0 ? 'FLAGGED' : 'LOW' });
-    const title = d.known ? d.known : d.kind === 'change' ? `${d.sign > 0 ? 'Brightened' : 'Faded'} between visits` : `Single-image source at ${d.wave.toFixed(2)} µm`;
+      : d.conf === 'high' ? h('span', { class: 'pill cand', title: d.archive === false ? 'Star-shaped, clean SPHEREx pixels, high S/N, and nothing at this spot in 2MASS or WISE' : 'Star-shaped, clean SPHEREx pixels, high S/N (archive check unavailable offline)', text: 'VERIFIED ✓' })
+        : d.conf === 'var' ? h('span', { class: 'pill var', title: 'A source is already at this spot in 2MASS (1997-2001) or WISE (2010-2020): most likely a variable star, not a new object', text: 'VARIABLE?' })
+          : d.conf === 'neb' ? h('span', { class: 'pill var', title: 'Sits in bright, structured nebulosity: may be a nebular knot', text: 'NEBULA' })
+            : h('span', { class: 'pill', title: d.flagBits > 0 ? 'SPHEREx quality flags mark these pixels' : 'Weak or not verified', text: d.flagBits > 0 ? 'FLAGGED' : 'LOW' });
+    const title = d.known ? d.known : d.kind === 'change' ? (d.conf === 'neb' && !d.archive ? `${d.sign > 0 ? 'Brightened' : 'Faded'} in bright nebulosity (may be a knot or seeing)` : d.archive ? `Variable star: ${d.sign > 0 ? 'brightened' : 'faded'} between visits` : d.archive === false && d.sign > 0 ? 'New source between visits (nothing in 2MASS/WISE)' : `${d.sign > 0 ? 'Brightened' : 'Faded'} between visits`)
+      : d.conf === 'var' ? `Known star at ${d.wave.toFixed(2)} µm, brighter in this image` : d.conf === 'neb' ? `Knot in nebula at ${d.wave.toFixed(2)} µm` : `Single-image source at ${d.wave.toFixed(2)} µm`;
     out.append(h('div', { class: 'item' }, pill,
       h('div', { class: 'grow' }, h('b', { text: title }), h('span', { class: 't', text: `${d.ra.toFixed(5)}°, ${d.dec.toFixed(5)}° · S/N ${d.snr.toFixed(0)}${d.mjd ? ' · ' + fmtDate(d.mjd, true) : ''}` })),
       h('button', { class: 'btn sm', type: 'button', text: 'Show', onclick: () => { S.hunt.sel = d; if (d.mjd) jumpToMjd(d.mjd); else { setMode('diff'); } } }),
       d.known ? null : h('button', { class: 'btn sm', type: 'button', title: 'Save to My finds', text: '★', onclick: () => saveFind(d) })));
   }
   if (!H.list.length) out.append(h('p', { class: 'muted small', text: 'Nothing stood out above the noise. Try another band, load more images, or a busier part of the ecliptic.' }));
-  out.append(h('p', { class: 'muted small', text: 'Candidates can be artefacts (cosmic rays, ghosts of bright stars, detector edges). Confirm by checking the image before and after, and in Difference mode.' }));
+  out.append(h('p', { class: 'muted small', text: 'Each unexplained source is checked for star shape, SPHEREx quality flags, local noise (so nebulae do not count), known asteroids and comets, and whether 2MASS or WISE already saw something there. Even so, confirm by checking the image before and after, and in Difference mode.' }));
 }
 
 async function saveFind(d) {
   const id = `${S.target.name}|${d.ra.toFixed(5)}|${d.dec.toFixed(5)}|${d.mjd || ''}`;
   await store.put('finds', id, {
     id, target: S.target.name, kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, date: d.mjd ? fmtDate(d.mjd, true) : null,
-    wave: d.wave || null, snr: d.snr, note: d.sign ? (d.sign > 0 ? 'brightened' : 'faded') : 'single-image source',
+    wave: d.wave || null, snr: d.snr, note: (d.sign ? (d.sign > 0 ? 'brightened' : 'faded') : 'single-image source') + (d.archive ? ', source in 2MASS/WISE' : d.archive === false ? ', nothing in 2MASS/WISE' : '') + (d.conf === 'neb' ? ', in nebula' : ''),
     frame: d.it ? frameKey(d.it.f) : null, saved: new Date().toISOString(),
   });
   toast('Saved to My finds ★', 'ok');
@@ -1492,7 +1571,7 @@ function exportJSON() {
     generator: 'SkyShift (NASA SPHEREx Sky Time Machine)', created: new Date().toISOString(), target: { ...S.target, track: undefined },
     images: S.items.map(it => ({ obsid: obsId(it.f), detector: it.f.det, release: it.f.qr, file: S3 + frameKey(it.f), mjd: it.r.mjd, wavelength_um: it.r.wave })),
     photometry: (S.phot || []).map(p => ({ mjd: p.it.r.mjd, wavelength_um: p.it.r.wave, flux_mJy: p.m.uJy / 1000, err_mJy: p.m.err / 1000 })),
-    hunt: S.hunt ? S.hunt.list.map(d => ({ kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, snr: d.snr, known: d.known || null })) : null,
+    hunt: S.hunt ? S.hunt.list.map(d => ({ kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, snr: d.snr, known: d.known || null, confidence: d.conf || null, in2massOrWise: d.archive ?? null })) : null,
     knownObjects: S.known.map(k => ({ name: k.obj.name, appearances: k.pts.length })),
     acknowledgement: 'This publication makes use of data products from SPHEREx, a joint project of JPL and Caltech funded by NASA. DOI 10.26131/IRSA652',
   };

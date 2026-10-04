@@ -248,6 +248,7 @@ main { max-width: 1320px; margin: 0 auto; padding: 18px max(14px, env(safe-area-
 .item .pill { font-size: .7rem; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .pill.known { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
 .pill.cand { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.pill.var { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .pill.change { background: color-mix(in srgb, var(--accent2) 22%, transparent); color: var(--accent2); }
 .item button { flex: none; }
 .item .sm { height: 32px; padding: 0 10px; font-size: .8rem; }
