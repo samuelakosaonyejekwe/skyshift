@@ -249,6 +249,8 @@ main { max-width: 1320px; margin: 0 auto; padding: 18px max(14px, env(safe-area-
 .item .pill { font-size: .7rem; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .pill.known { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
 .pill.cand { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+.pill.flash { background: color-mix(in srgb, #b98cff 22%, transparent); color: #b98cff; }
+:root[data-theme="light"] .pill.flash { color: #6b3fc4; }
 .pill.var { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .pill.change { background: color-mix(in srgb, var(--accent2) 22%, transparent); color: var(--accent2); }
 .item button { flex: none; }
