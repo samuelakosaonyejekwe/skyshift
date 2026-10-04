@@ -255,7 +255,13 @@ export function upsample(data, n, f = 4) {
           if (Number.isFinite(v)) { const ww = wyv * wx[kx * 4 + i]; s += v * ww; ws += ww; }
         }
       }
-      out[Y * m + X] = ws > 0.2 ? s / ws : NaN;
+      if (!(ws > 0.2)) { out[Y * m + X] = NaN; continue; }
+      // clamp to the 2x2 nearest source pixels: no ringing/halos around bright stars
+      const bx = Math.floor((X + 0.5) / f - 0.5), by = Math.floor((Y + 0.5) / f - 0.5);
+      let lo = Infinity, hi = -Infinity;
+      for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) { const v = at(bx + i, by + j); if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+      const v = s / ws;
+      out[Y * m + X] = lo <= hi ? Math.min(hi, Math.max(lo, v)) : v;
     }
   }
   return out;

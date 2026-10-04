@@ -436,7 +436,7 @@ function derived(it) {
   let d = S.cache.get(it);
   const bg = $('#optBg').checked;
   if (!d || d.bg !== bg) {
-    const base = bg ? R.subtractBackground(it.r.data, it.r.size, Math.max(12, it.r.size / 6)) : it.r.data;
+    const base = bg ? R.subtractBackground(it.r.data, it.r.size, Math.max(20, it.r.size / 3)) : it.r.data;
     d = { bg, base, fill: R.fillHoles(base, it.r.size, 24) };
     S.cache.set(it, d);
   }
@@ -645,7 +645,7 @@ export function render() {
     const token = (S.refToken = (S.refToken || 0) + 1);
     refImage(sv, tg, N).then(ref => {
       if (!S || S.mode !== 'then' || S.refToken !== token) return;
-      let d = $('#optBg').checked ? R.subtractBackground(ref, N, Math.max(12, N / 6)) : ref;
+      let d = $('#optBg').checked ? R.subtractBackground(ref, N, Math.max(20, N / 3)) : ref;
       d = R.fillHoles(d, N);
       drawMono(cv2.getContext('2d'), d, R.levels(d, 'auto', [25, 99.2]));
       cv2.hidden = false;
