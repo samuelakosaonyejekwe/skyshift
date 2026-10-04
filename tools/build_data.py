@@ -605,8 +605,24 @@ def restore_index(meta):
     return ok > 0.95 * max(1, len(tiles))
 
 
+def reuse_previous():
+    """Code-only deploys: reuse the latest published data instead of a full
+    NASA refresh (the scheduled runs keep the data fresh)."""
+    meta = {}
+    if not restore_index(meta):
+        return False
+    for name in ("sso.json", "exoplanets.json", "cad.json", "news.json", "images.json", "ephem.json", "movers.json"):
+        if not restore(name):
+            return False
+    restore("spherex_orbit.bin", True)
+    log("reused previous data")
+    return True
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
+    if os.environ.get("SKYSHIFT_REUSE") == "1" and PREV_BASES and reuse_previous():
+        return
     meta = read_json("meta.json", {}) or {}
     status = {}
     frames = []

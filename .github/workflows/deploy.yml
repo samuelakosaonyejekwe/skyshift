@@ -34,6 +34,9 @@ jobs:
 
       - name: Pull fresh NASA data (IRSA SPHEREx, JPL, Exoplanet Archive, NASA.gov)
         env:
+          # code-only pushes reuse the latest published data (deploys in ~2 min);
+          # scheduled and manual runs do the full refresh
+          SKYSHIFT_REUSE: ${{ github.event_name == 'push' && '1' || '' }}
           # if an upstream service is down, the last good copy is restored from
           # the live site, then from the CDN mirror of the data branch
           SKYSHIFT_PREVIOUS: >-
@@ -55,7 +58,7 @@ jobs:
           path: site
 
       - name: Mirror the data to the `data` branch (served by jsDelivr for the backup host)
-        if: github.event_name != 'schedule' || github.event.schedule == '17 0 * * *'
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 0 * * *'
         run: |
           set -e
           tmp=$(mktemp -d)
