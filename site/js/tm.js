@@ -438,6 +438,12 @@ function finishLoading() {
     setMsg(S.errors ? 'Could not reach NASA\'s SPHEREx archive. Check your connection and try again.' : 'This position falls in gaps between SPHEREx detectors in the loaded images. Try nearby coordinates or load more images.');
   }
   updateSaveBtn();
+  if (S.moreFrom != null && S.items.length > S.moreFrom) {
+    const added = S.items.length - S.moreFrom;
+    toast(`${added} more image${added > 1 ? 's' : ''} added: now ${S.items.length} in the movie, timeline and Frames tab.`, 'ok', 7000,
+      { label: 'Show all', fn: () => { $('#sideTabs [data-side=frames]').click(); $('#sideTabs').scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+  }
+  S.moreFrom = null;
   if ($('#optKnown').checked) setTimeout(computeKnown, 400);
   setTimeout(measureAll, 150);
   if (ctx.settings.autoplay && S.mode === 'movie' && visible().length > 2 && !S.playing && !ctx.settings.reduceMotion) play();
@@ -457,7 +463,7 @@ function progress() {
 
 function renderLoadNote() {
   const n = $('#loadNote');
-  n.textContent = `${S.items.length} images loaded` + (S.skipped ? ` · ${S.skipped} skipped (the target fell just outside those images' edges)` : '') +
+  n.textContent = `${S.items.length} images loaded (see the movie, timeline and Frames tab)` + (S.skipped ? ` · ${S.skipped} skipped (the target fell just outside those images' edges)` : '') +
     (S.errors ? ` · ${S.errors} failed` : '') + ` · ${fmtBytes(S.bytes)} downloaded from NASA's archive`;
 }
 
@@ -1533,6 +1539,7 @@ function bindUI() {
   $('#loadMore').onclick = () => {
     if (!S) return;
     const have = new Set(S.chosen.map(frameKey));
+    S.moreFrom = S.items.length;
     const more = chooseFrames(S.frames.filter(f => !have.has(frameKey(f))), ctx.settings.max);
     S.chosen.push(...more);
     $('#loadMore').hidden = S.chosen.length >= S.frames.length;
