@@ -1,5 +1,5 @@
 // SkyShift worker: streams SPHEREx cutouts off the UI thread.
-import { cutout, quicklook } from './fits.js';
+import { cutout, quicklook, AUTO_FAST_FIRST } from './fits.js';
 
 const jobs = new Map();
 
@@ -20,7 +20,7 @@ self.onmessage = async ev => {
           // auto: first images over whole rows (appear instantly), the rest
           // column-precise (a fraction of the data)
           let mode = m.opts.mode;
-          if (mode === 'auto') mode = started++ < 6 ? 'fast' : 'saver';
+          if (mode === 'auto') mode = started++ < AUTO_FAST_FIRST ? 'fast' : 'saver';
           const r = await cutout(f, target, { ...m.opts, mode }, ctl.signal);
           done++;
           if (r) self.postMessage({ job: m.job, type: 'frame', i, r, done }, [r.data.buffer]);

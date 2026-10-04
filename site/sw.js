@@ -3,14 +3,15 @@
 const BUILD = '__BUILD__';
 const SHELL = `skyshift-shell-${BUILD}`;
 const DATA = 'skyshift-data-v1';
-const MEDIA = 'skyshift-media-v1';
+const MEDIA = 'skyshift-media-v2';   // v1 held opaque responses; dropped on activate
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/tm.js', 'js/fits.js', 'js/worker.js', 'js/data.js', 'js/render.js', 'js/sky.js',
-  'js/orbits.js', 'js/charts.js', 'js/gif.js', 'js/store.js', 'js/util.js',
+  'js/orbits.js', 'js/charts.js', 'js/gif.js', 'js/store.js', 'js/util.js', 'js/featured.js',
   'img/allsky.webp', 'img/allsky-1000.webp',
-  ...['orion-nebula-m42', 'north-ecliptic-pole-deep-field', 'south-ecliptic-pole-deep-field', 'barnard-s-star', 'wise-0855-0714', 'luhman-16-brown-dwarfs', 'proxima-centauri', 'galactic-centre-sgr-a', 'cygnus-x-dr21', 'rho-ophiuchi-cloud', 'eagle-nebula-pillars-of-creation', 'andromeda-galaxy-m31', '30-doradus-tarantula', 'v1647-ori-mcneil-s-nebula', 'herbig-haro-1-2', 'eta-carinae', 'crab-nebula-m1', 'boyajian-s-star', 'whirlpool-galaxy-m51', 'pleiades-m45'].map(n => `img/thumbs/${n}.webp`), 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
+  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
 ];
+// featured-card thumbnails are cached at runtime as they are first shown
 const DATA_WARM = ['data/meta.json', 'data/coverage.json', 'data/movers.json', 'data/exoplanets.json', 'data/news.json', 'data/images.json', 'data/cad.json', 'data/ephem.json'];
 
 self.addEventListener('install', e => {
@@ -27,7 +28,8 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
-    for (const k of await caches.keys()) if (k.startsWith('skyshift-shell-') && k !== SHELL) await caches.delete(k);
+    // keep only the current caches (old app versions, old media cache)
+    for (const k of await caches.keys()) if (k.startsWith('skyshift-') && ![SHELL, DATA, MEDIA].includes(k)) await caches.delete(k);
     if (self.registration.navigationPreload) await self.registration.navigationPreload.enable().catch(() => {});
     await self.clients.claim();
   })());
@@ -53,7 +55,7 @@ async function networkFirst(req, cacheName, ms, preload) {
 async function staleWhileRevalidate(e, cacheName, key) {
   const c = await caches.open(cacheName);
   const hit = await c.match(key || e.request, { ignoreSearch: true });
-  const net = fetch(e.request).then(r => { if (r && (r.ok || r.type === 'opaque')) c.put(key || e.request, r.clone()); return r; }).catch(() => null);
+  const net = fetch(e.request).then(r => { if (r && r.ok) c.put(key || e.request, r.clone()); return r; }).catch(() => null);
   if (hit) { e.waitUntil(net); return hit; }
   return (await net) || new Response('offline', { status: 503, statusText: 'offline' });
 }
@@ -64,7 +66,9 @@ async function cacheFirstLimited(e, cacheName, max = 150) {
   if (hit) return hit;
   try {
     const r = await fetch(e.request);
-    if (r && (r.ok || r.type === 'opaque')) {
+    // only readable (CORS) responses: browsers count each opaque response as
+    // several MB of storage quota, which would crowd out real offline data
+    if (r && r.ok && r.type !== 'opaque') {
       c.put(e.request, r.clone());
       c.keys().then(ks => { if (ks.length > max) ks.slice(0, ks.length - max).forEach(k => c.delete(k)); });
     }

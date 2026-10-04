@@ -1,4 +1,7 @@
 // SkyShift - tiny dependency-free SVG charts (scatter / line / bars).
+import { mjdToDate } from './util.js';
+
+const dateToMjd = d => d.getTime() / 86400000 + 40587;
 const NS = 'http://www.w3.org/2000/svg';
 const el = (t, a = {}, parent) => {
   const e = document.createElementNS(NS, t);
@@ -90,8 +93,6 @@ function timeTicks(x0, x1) {
   }
   return out;
 }
-export const mjdToDate = m => new Date((m - 40587) * 86400000);
-export const dateToMjd = d => d.getTime() / 86400000 + 40587;
 
 export function bars(host, { data, xfmt, yfmt = v => v, color = 'var(--accent)', height = 160, label }) {
   host.textContent = '';

@@ -233,15 +233,18 @@ function track(el, t0, t1) {
   const key = el.name;
   let tr = TRACKS.get(key);
   if (tr && tr.t0 <= t0 && tr.t1 >= t1) return tr;
-  const ep = el.epoch ?? el.tp;
+  const ep = el.epoch;
   const h = el.q < 1.3 ? 0.25 : 0.5;
   // initial state at epoch from the osculating two-body orbit
   const p0 = helio(el, ep), pa = helio(el, ep - 0.005), pb = helio(el, ep + 0.005);
   const y0 = [...p0, (pb[0] - pa[0]) / 0.01, (pb[1] - pa[1]) / 0.01, (pb[2] - pa[2]) / 0.01];
-  const lo = Math.min(t0, ep) - 1, hi = Math.max(t1, ep) + 1;
-  const n = Math.ceil((hi - lo) / h) + 1;
+  // the time grid must pass exactly through the epoch: the initial state is
+  // only valid there (an offset of up to h/2 would shift every position)
+  const before = Math.ceil((ep - (Math.min(t0, ep) - 1)) / h), after = Math.ceil((Math.max(t1, ep) + 1 - ep) / h);
+  const lo = ep - before * h;
+  const n = before + after + 1;
   const S = new Float64Array(n * 6);
-  const iEp = Math.round((ep - lo) / h);
+  const iEp = before;
   const put = (i, y) => { for (let k = 0; k < 6; k++) S[i * 6 + k] = y[k]; };
   put(iEp, y0);
   let y = y0;
@@ -262,7 +265,8 @@ function trackAt(tr, t) {
 // Apparent position as seen by SPHEREx (falls back to two-body/geocentric).
 export function precise(el, mjd, span) {
   const t = mjd + TDB;
-  if (!inEph(t) || !(el.epoch ?? el.tp)) return geocentric(el, mjd);
+  // the N-body run starts from the osculating epoch; without one, use two-body
+  if (!inEph(t) || el.epoch == null) return geocentric(el, mjd);
   const tr = track(el, span ? span[0] + TDB - 2 : t - 2, span ? span[1] + TDB + 2 : t + 2);
   const E = bodyAt('earth', t, [0, 0, 0]);
   let p = trackAt(tr, t);

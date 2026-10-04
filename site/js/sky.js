@@ -3,8 +3,9 @@ const D2R = Math.PI / 180;
 
 export function mollweide(ra, dec) {
   // returns x in [-2, 2], y in [-1, 1]
-  let lon = ((ra + 180) % 360 + 360) % 360 - 180; // centre RA=0? we centre on 180 below
-  lon = -lon;                                       // east to the left
+  // callers pass ra-180 so that RA 180 sits in the centre of the map
+  let lon = ((ra + 180) % 360 + 360) % 360 - 180;
+  lon = -lon;                                       // east (increasing RA) to the left
   const phi = dec * D2R;
   let t = phi;
   for (let i = 0; i < 20; i++) {
@@ -12,7 +13,7 @@ export function mollweide(ra, dec) {
     t -= d;
     if (Math.abs(d) < 1e-9) break;
   }
-  return [2 * Math.SQRT2 / Math.PI * (lon * D2R) * Math.cos(t) / Math.SQRT2, Math.sin(t)];
+  return [2 / Math.PI * (lon * D2R) * Math.cos(t), Math.sin(t)];
 }
 
 export function inverse(x, y) {
@@ -68,7 +69,7 @@ export class SkyMap {
     this.skyImg.onload = () => { this.bg = null; this.draw(); };
     this.skyImg.src = new URL(window.innerWidth < 900 ? '../img/allsky-1000.webp' : '../img/allsky.webp', import.meta.url).href;
     this.mode = 'counts';
-    this.points = { targets: [], exo: [], live: [], marker: null };
+    this.points = { targets: [], exo: [], live: [] };
     this.zoom = 1; this.cx = 0; this.cy = 0;
     this.bg = null;
     const ro = new ResizeObserver(() => this.resize());
@@ -283,14 +284,6 @@ export class SkyMap {
         if (this.zoom > 1.6 || t.label) { ctx.fillStyle = '#ffe9a3'; ctx.shadowColor = '#000'; ctx.shadowBlur = 4 * dpr; ctx.fillText(t.name, p[0] + 9 * dpr, p[1] + 4 * dpr); ctx.shadowBlur = 0; }
       }
     }
-    if (this.points.marker) {
-      const m = this.points.marker;
-      const p = this.sky(m.ra, m.dec);
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * dpr;
-      ctx.beginPath(); ctx.arc(p[0], p[1], 9 * dpr, 0, 2 * Math.PI); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(p[0] - 15 * dpr, p[1]); ctx.lineTo(p[0] - 5 * dpr, p[1]); ctx.moveTo(p[0] + 5 * dpr, p[1]); ctx.lineTo(p[0] + 15 * dpr, p[1]);
-      ctx.moveTo(p[0], p[1] - 15 * dpr); ctx.lineTo(p[0], p[1] - 5 * dpr); ctx.moveTo(p[0], p[1] + 5 * dpr); ctx.lineTo(p[0], p[1] + 15 * dpr); ctx.stroke();
-    }
   }
   setZoom(z, ax, ay) {
     const before = ax != null ? this.fromPx(ax, ay) : null;
@@ -300,6 +293,8 @@ export class SkyMap {
       this.cx += before[0] - after[0]; this.cy += before[1] - after[1];
     }
     if (this.zoom === 1) { this.cx = 0; this.cy = 0; }
+    // page scrolls over the map unless zoomed in (then drag pans the map)
+    this.c.style.touchAction = this.zoom > 1 ? 'none' : 'pan-y';
     this.bg = null; this.draw();
   }
   nearestPoint(px, py) {
@@ -357,7 +352,10 @@ export class SkyMap {
     };
     c.addEventListener('pointerup', up);
     c.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); pinch0 = null; });
+    c.style.touchAction = 'pan-y';
+    // wheel zooms only with Ctrl/Cmd (or a trackpad pinch) or once zoomed in
     c.addEventListener('wheel', e => {
+      if (!(e.ctrlKey || e.metaKey || this.zoom > 1)) return;
       e.preventDefault();
       const p = pos(e);
       this.setZoom(this.zoom * (e.deltaY < 0 ? 1.25 : 0.8), p[0], p[1]);

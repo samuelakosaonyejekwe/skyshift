@@ -36,7 +36,7 @@ export function robustStats(data) {
   return { med: p50, sig: Math.max(1e-9, (p84 - p16) / 2) };
 }
 
-// stretch: linear | asinh | log | sqrt | hist
+// stretch: linear | sqrt | log | asinh
 export function scaleTo8(data, { lo, hi, stretch = 'asinh', soft = 8 }) {
   const n = data.length, out = new Uint8ClampedArray(n);
   const span = hi - lo || 1;
@@ -74,7 +74,7 @@ export function levels(data, mode = 'auto', clip = [1, 99.7]) {
   return { lo, hi: hi > lo ? hi : lo + 1 };
 }
 
-export function paint(ctx, size, bytes, cmap, nanRGB = [12, 14, 24]) {
+export function paint(ctx, size, bytes, cmap) {
   const L = lut(cmap);
   const img = ctx.createImageData(size, size);
   const d = img.data;
@@ -83,7 +83,6 @@ export function paint(ctx, size, bytes, cmap, nanRGB = [12, 14, 24]) {
     d[i * 4] = L[k]; d[i * 4 + 1] = L[k + 1]; d[i * 4 + 2] = L[k + 2]; d[i * 4 + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
-  void nanRGB;
 }
 
 export function paintRGB(ctx, size, r, g, b) {
@@ -178,8 +177,10 @@ export function fillHoles(data, size, passes = 3) {
   return a;
 }
 
-// Aperture photometry on a background-subtracted cutout.
-// Returns flux density in micro-Jansky (surface brightness MJy/sr * pixel solid angle).
+// Aperture photometry: sum inside radius r minus the median of an annulus
+// (rin..rout), so it works on raw cutouts.  Returns flux density in
+// micro-Jansky (surface brightness MJy/sr x pixel solid angle) without an
+// aperture correction, i.e. a lower bound for point sources.
 export function aperture(data, size, cx, cy, scaleArcsec, r = 2.2, rin = 5, rout = 8) {
   let sum = 0, n = 0, nbad = 0;
   const ann = [];

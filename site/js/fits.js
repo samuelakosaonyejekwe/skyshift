@@ -36,6 +36,9 @@ function pooled(fn) {
 export const stats = { bytes: 0, requests: 0 };
 const OVERHEAD = 900; // approx. HTTP request+response header bytes per range request
 export const NPIX = 2040;
+// 'auto' download mode: this many images per batch use whole rows (appear
+// fastest), the rest column-precise reads (a fraction of the data)
+export const AUTO_FAST_FIRST = 6;
 const BLOCK = 2880;
 
 // Level-2 pixel flags (SPHEREx Explanatory Supplement, Table 16).
@@ -73,8 +76,8 @@ async function range(url, start, end, signal, acc) {
           const r = await fetch(viaHost(url, i), { headers: { Range: hdr }, signal: ctl.signal, mode: 'cors', cache: 'no-store' });
           if (r.status !== 206 && r.status !== 200) throw new Error('HTTP ' + r.status);
           const b = await r.arrayBuffer();
-        stats.bytes += b.byteLength + OVERHEAD; stats.requests++;
-        if (acc) acc.bytes += b.byteLength + OVERHEAD;
+          stats.bytes += b.byteLength + OVERHEAD; stats.requests++;
+          if (acc) acc.bytes += b.byteLength + OVERHEAD;
           return r.status === 200 && start >= 0 ? b.slice(start, end == null ? undefined : end + 1) : b;
         } finally {
           clearTimeout(timer);
@@ -369,9 +372,18 @@ export async function readWaveTableTail(url, signal) {
 }
 
 async function rangeSuffix(url, n, signal) {
-  const r = await fetch(viaHost(url), { headers: { Range: `bytes=-${n}` }, signal, cache: 'no-store', mode: 'cors' });
-  if (r.status !== 206) throw new Error('suffix range ' + r.status);
-  return r.arrayBuffer();
+  let last;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await pooled(() => fetch(viaHost(url, i), { headers: { Range: `bytes=-${n}` }, signal, cache: 'no-store', mode: 'cors' }));
+      if (r.status !== 206) throw new Error('suffix range ' + r.status);
+      return await r.arrayBuffer();
+    } catch (e) {
+      if (signal && signal.aborted) throw e;
+      last = e;
+    }
+  }
+  throw last;
 }
 
 export function waveAt(t, x, y) {
@@ -450,15 +462,15 @@ export async function cutout(f, target, opts, signal) {
       const ix = Math.floor(px), iy = Math.floor(py);
       if (!(ix >= 0 && iy >= 0 && ix < bw - 1 && iy < (y1 - y0))) { out[j * size + i] = NaN; bad++; continue; }
       const ax = px - ix, ay = py - iy;
-      let acc = 0, wsum = 0;
+      let sum = 0, wsum = 0;
       for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
         const q = (iy + dy) * bw + ix + dx;
         const v = img[q];
         if (!Number.isFinite(v) || (flags && (flags[q] & BAD_FLAGS))) continue;
         const wgt = (dx ? ax : 1 - ax) * (dy ? ay : 1 - ay);
-        acc += v * wgt; wsum += wgt;
+        sum += v * wgt; wsum += wgt;
       }
-      if (wsum > 0.15) out[j * size + i] = acc / wsum; else { out[j * size + i] = NaN; bad++; }
+      if (wsum > 0.15) out[j * size + i] = sum / wsum; else { out[j * size + i] = NaN; bad++; }
     }
   }
   const wv = waveAt(wtab, c[0], c[1]);

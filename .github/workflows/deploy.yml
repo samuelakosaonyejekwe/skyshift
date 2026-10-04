@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install --quiet numpy
+      - run: pip install --quiet -r tools/requirements.txt
 
       - name: Pull fresh NASA data (IRSA SPHEREx, JPL, Exoplanet Archive, NASA.gov)
         env:
@@ -70,7 +70,7 @@ jobs:
         with:
           path: site
 
-      - name: Mirror the data to the `data` branch (served by jsDelivr for the backup host)
+      - name: Mirror the data to the `data` branch (jsDelivr CDN fallback for every host)
         if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 0 * * *'
         run: |
           set -e
@@ -88,7 +88,7 @@ jobs:
             curl -s -o /dev/null "https://purge.jsdelivr.net/gh/${{ github.repository }}@data/$f" || true
           done
 
-      # ---- independent second host (activates when its secret is set) ----
+      # ---- independent second host: Cloudflare Pages (skyshift.pages.dev) ----
       - name: Deploy to Cloudflare Pages (second host)
         continue-on-error: true   # a backup-host problem must never block the main site
         env:
@@ -105,14 +105,6 @@ jobs:
           npx --yes wrangler@3 pages project create skyshift --production-branch main >/dev/null 2>&1 || true
           npx --yes wrangler@3 pages deploy site --project-name skyshift --branch main --commit-dirty=true
 
-      - name: Deploy to Netlify (second host)
-        continue-on-error: true
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-        run: |
-          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then echo "No Netlify token set; skipping."; exit 0; fi
-          npx --yes netlify-cli@17 deploy --dir site --prod --site "$NETLIFY_SITE_ID" --auth "$NETLIFY_AUTH_TOKEN" --message "SkyShift refresh"
 
   deploy:
     needs: build

@@ -16,6 +16,7 @@ import math
 import os
 import re
 import struct
+import time
 import urllib.request
 
 import numpy as np
@@ -36,12 +37,13 @@ def _get(url, a=None, b=None, suffix=None, tries=4):
     elif a is not None:
         h["Range"] = f"bytes={a}-{b}"
     last = None
-    for _ in range(tries):
+    for i in range(tries):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=120) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001
             last = e
+            time.sleep(1 + 2 * i)
     raise last
 
 
@@ -265,7 +267,10 @@ def cutout(f, ra, dec):
 
 
 def choose(frames, n=PER_TARGET):
-    """Spread picks across visits (gap > 20 d or > 30 d long) and detectors."""
+    """Pick up to n frames spread evenly over time: split into visits (a gap of
+    20 days, or 30 days of continuous coverage, starts a new one), give each
+    visit an equal share and, within a visit, rotate through the detectors
+    taking frames evenly spaced in time."""
     frames = sorted(frames, key=lambda f: f["mjd"])
     visits = []
     for f in frames:
@@ -274,24 +279,38 @@ def choose(frames, n=PER_TARGET):
             v.append(f)
         else:
             visits.append([f])
-    per = max(2, n // max(1, len(visits)))
+    # hand out the budget one frame at a time across visits (round-robin)
+    shares = [0] * len(visits)
+    left = min(n, len(frames))
+    while left:
+        progressed = False
+        for i, v in enumerate(visits):
+            if left and shares[i] < len(v):
+                shares[i] += 1; left -= 1; progressed = True
+        if not progressed:
+            break
     out = []
-    for v in visits:
+    for v, share in zip(visits, shares):
+        if not share:
+            continue
         by = {}
         for f in v:
             by.setdefault(f["det"], []).append(f)
-        lists = list(by.values())
-        k = 0
-        while len([x for x in out if x in v]) < min(per, len(v)) and k < 400:
-            arr = lists[k % len(lists)]
-            idx = (k // len(lists)) % len(arr)
-            cand = arr[(idx * 7 + k) % len(arr)]
-            if cand not in out:
-                out.append(cand)
-            k += 1
+        lists = [by[d] for d in sorted(by)]
+        take = min(share, len(v))
+        per = -(-take // len(lists))          # ceil
+        picked = []
+        for arr in lists:
+            k = min(per, len(arr))
+            picked += [arr[int((j + 0.5) * len(arr) / k)] for j in range(k)]
+        picked.sort(key=lambda f: f["mjd"])
+        if len(picked) > take:
+            step = len(picked) / take
+            picked = [picked[int(j * step)] for j in range(take)]
+        out += picked
     if len(out) > n:
         step = len(out) / n
-        out = [out[int(i * step)] for i in range(n)]
+        out = [out[int(j * step)] for j in range(n)]
     return sorted(out, key=lambda f: f["mjd"])
 
 

@@ -1,5 +1,5 @@
 // SkyShift - tiny IndexedDB key/value store (works offline, survives reloads).
-const DB = 'skyshift', VER = 1, STORES = ['cutouts', 'saved', 'finds', 'kv'];
+const DB = 'skyshift', VER = 1, STORES = ['cutouts', 'saved', 'finds'];
 let dbp;
 function db() {
   if (!dbp) dbp = new Promise((res, rej) => {
@@ -26,10 +26,6 @@ export const put = (store, k, v) => tx(store, 'readwrite', s => s.put(v, k));
 export const del = (store, k) => tx(store, 'readwrite', s => s.delete(k));
 export const keys = store => tx(store, 'readonly', s => s.getAllKeys());
 export const all = store => tx(store, 'readonly', s => s.getAll());
-export async function entries(store) {
-  const [k, v] = await Promise.all([keys(store), all(store)]);
-  return (k || []).map((key, i) => [key, v[i]]);
-}
 export async function usage() {
   try { const e = await navigator.storage.estimate(); return e; } catch { return null; }
 }

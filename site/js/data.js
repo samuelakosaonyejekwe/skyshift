@@ -40,8 +40,11 @@ export function getBin(name, opts) {
 }
 
 // ---------------------------------------------------------------- tiles
-const MJD0 = 60780.0;
+// Geometry and epoch come from meta.json (written by tools/build_data.py);
+// the defaults below are only used before it has loaded.
+let MJD0 = 60780.0;
 let TILE_DEG = 3.0;
+let TILE_SET = null;     // ids of tiles that exist (meta.tiles), to skip empty sky
 const NBANDS = () => Math.round(180 / TILE_DEG);
 const bandCount = b => Math.max(1, Math.round(360 * Math.cos((-90 + (b + 0.5) * TILE_DEG) * Math.PI / 180) / TILE_DEG));
 export const FRAME_RADIUS = 2.47;
@@ -72,6 +75,7 @@ function parseTile(buf) {
   return rows;
 }
 function loadTile(id) {
+  if (TILE_SET && !TILE_SET.has(id)) return Promise.resolve([]);
   if (!tileCache.has(id)) {
     tileCache.set(id, fetchAny(`tiles/${id}.bin`, 'buffer', { mirrors: true, timeout: 20000 })
       .then(parseTile)
@@ -87,8 +91,6 @@ function sepDeg(ra1, de1, ra2, de2) {
 }
 
 export function tilesNear(ra, dec, radius) {
-  const meta = memo.get('meta.json');
-  void meta;
   const ids = [];
   const nb = NBANDS();
   for (let b = 0; b < nb; b++) {
@@ -108,7 +110,12 @@ export function tilesNear(ra, dec, radius) {
 
 // All SPHEREx frames whose centre is within `radius` of (ra, dec).
 export async function framesNear(ra, dec, radius = FRAME_RADIUS) {
-  try { const m = await getMeta(); if (m.tileDeg) TILE_DEG = m.tileDeg; } catch { /* offline default */ }
+  try {
+    const m = await getMeta();
+    if (m.tileDeg) TILE_DEG = m.tileDeg;
+    if (m.mjd0) MJD0 = m.mjd0;
+    if (m.tiles && !TILE_SET) TILE_SET = new Set(Object.keys(m.tiles));
+  } catch { /* offline: defaults */ }
   const ids = tilesNear(ra, dec, radius);
   const all = await Promise.all(ids.map(id => loadTile(id).catch(() => [])));
   const out = [];
@@ -181,7 +188,7 @@ export async function liveImages() {
   });
 }
 
-// Name resolver: offline lists first, then CDS Sesame (SIMBAD/NED/VizieR).
+// Name resolver: CDS Sesame (SIMBAD, NED, VizieR).
 export async function resolveName(q) {
   const r = await fetch(`https://cds.unistra.fr/cgi-bin/nph-sesame/-oJ/SNV?${encodeURIComponent(q)}`);
   if (!r.ok) throw new Error('resolver ' + r.status);

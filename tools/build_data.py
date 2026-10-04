@@ -13,11 +13,12 @@ Pulls fresh NASA data and writes compact static files the web app reads:
   * NASA.gov        - SPHEREx mission news feed
   * NASA Image and Video Library - SPHEREx imagery
 
-Every source is optional: if one fails, the previous copy (if present in the
-output directory) is kept, so the site never loses data because an upstream
-service had a bad day.
+Every source is optional: if one fails, the last good copy is restored from
+the published site (or its CDN mirror), so the site never loses data because an
+upstream service had a bad day.
 
-Standard library only.  Usage:  python3 tools/build_data.py site/data
+Requirements: Python 3.10+; numpy for the pre-built target packs
+(tools/requirements.txt).  Usage:  python3 tools/build_data.py site/data
 """
 import concurrent.futures as cf
 import csv
@@ -32,6 +33,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import bisect
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 OUT = sys.argv[1] if len(sys.argv) > 1 else "site/data"
 TAP = os.environ.get("SKYSHIFT_TAP", "https://irsa.ipac.caltech.edu/TAP/sync")
 UA = "SkyShift-data-pipeline/1.0 (+https://github.com/samuelakosaonyejekwe/skyshift)"
-MJD0 = 60780.0          # a little before SPHEREx survey start (2025-05-01)
+MJD0 = 60780.0          # 2025-04-22, just before the first SPHEREx survey image (2025-04-24)
 TILE_DEG = 3.0          # declination band height for frame tiles
 FRAME_RADIUS = 2.47     # half-diagonal of a 3.485 deg SPHEREx frame
 
@@ -69,9 +71,9 @@ def http(url, data=None, timeout=300, tries=4, headers=None):
     raise last
 
 
-def tap(query, timeout=900):
+def tap(query, timeout=900, tries=4):
     body = urllib.parse.urlencode({"QUERY": query, "FORMAT": "csv", "LANG": "ADQL"}).encode()
-    raw = http(TAP, data=body, timeout=timeout)
+    raw = http(TAP, data=body, timeout=timeout, tries=tries)
     text = raw.decode("utf-8", "replace")
     if text.lstrip().startswith("<"):
         raise RuntimeError("TAP error: " + text[:400])
@@ -104,7 +106,7 @@ def mjd_to_iso(m):
 
 
 # --------------------------------------------------------------------------
-# Tiling (must match site/js/tiles.js)
+# Tiling (must match site/js/data.js)
 # --------------------------------------------------------------------------
 NBANDS = int(round(180 / TILE_DEG))
 
@@ -136,6 +138,8 @@ def fetch_frames():
         windows.append((t, min(t + 12, end)))
         t += 12
     log(f"SPHEREx: querying {len(windows)} time windows from IRSA TAP")
+    # fail fast when IRSA is down instead of retrying every window
+    tap("select top 1 obs_id from spherex.obscore", timeout=120, tries=3)
 
     def run(w):
         q = ("select p.time_bounds_lower, coord1(p.pt), coord2(p.pt), a.uri "
@@ -146,7 +150,8 @@ def fetch_frames():
         return rows[1:]
 
     frames = {}
-    with cf.ThreadPoolExecutor(4) as ex:
+    ex = cf.ThreadPoolExecutor(4)
+    try:
         for k, rows in enumerate(ex.map(run, windows)):
             for r in rows:
                 try:
@@ -164,6 +169,9 @@ def fetch_frames():
                     frames[key] = (qr, week, ver, int(det), int(ls), int(ss), ra, dec, t)
             if k % 10 == 0:
                 log(f"  window {k + 1}/{len(windows)} -> {len(frames)} frames")
+    finally:
+        # on any failure, drop the queued windows instead of waiting for them
+        ex.shutdown(wait=True, cancel_futures=True)
     log(f"SPHEREx: {len(frames)} unique frames")
     return list(frames.values())
 
@@ -213,7 +221,7 @@ def coverage_and_stats(frames):
     # 1-degree coverage grid: number of frames whose footprint covers the cell
     W, H = 360, 180
     cov = [0] * (W * H)
-    first = [0] * (W * H)   # most recent day (mjd - MJD0) a cell was observed
+    last = [0] * (W * H)    # most recent day (mjd - MJD0) a cell was observed
     r = FRAME_RADIUS * 0.72  # inscribed-ish radius of the square footprint
     for f in frames:
         ra, dec, t = f[6], f[7], f[8]
@@ -230,15 +238,15 @@ def coverage_and_stats(frames):
                 if cov[k] < 65535:
                     cov[k] += 1
                 td = int(t - MJD0)
-                if td > first[k]:
-                    first[k] = td
+                if td > last[k]:
+                    last[k] = td
     covered = sum(1 for c in cov if c)
     # area-weighted sky fraction
     tot = sum(math.cos(math.radians(-89.5 + (k // W))) for k in range(W * H))
     area = sum(math.cos(math.radians(-89.5 + (k // W))) for k in range(W * H) if cov[k])
     import base64
     cov_b = base64.b64encode(struct.pack(f"<{W * H}H", *cov)).decode()
-    last_b = base64.b64encode(struct.pack(f"<{W * H}H", *[min(65535, x) for x in first])).decode()
+    last_b = base64.b64encode(struct.pack(f"<{W * H}H", *[min(65535, x) for x in last])).decode()
     write_json("coverage.json", {"w": W, "h": H, "mjd0": MJD0, "counts": cov_b, "lastDay": last_b})
 
     days, bands, periods = {}, [0] * 7, {}
@@ -456,7 +464,6 @@ def fetch_movers(frames):
                     i0 = int((p[1] % 360) / 360 * n)
                     for di in (-1, 0, 1):
                         cand.add((bb, (i0 + di) % n))
-        import bisect
         for key in cand:
             for f in grid.get(key, []):
                 t = f[8]
@@ -604,10 +611,15 @@ def to_spacecraft(ra, dec, delta, sc):
     return (math.degrees(math.atan2(g[1], g[0])) + 360) % 360, math.degrees(math.asin(g[2] / n))
 
 
+def featured():
+    """Featured targets from site/js/featured.js (strict JSON after the '=')."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "site", "js", "featured.js"), encoding="utf-8").read()
+    return json.loads(src[src.index("["):src.rindex("]") + 1])
+
+
 def build_packs(frames):
     import packs
-    app = open(os.path.join(os.path.dirname(__file__), "..", "site", "js", "app.js"), encoding="utf-8").read()
-    feats = re.findall(r"\{ name: '((?:[^'\\]|\\.)*)', ra: ([\d.\-]+), dec: ([\d.\-]+)", app)
+    feats = [(f["name"], f["ra"], f["dec"]) for f in featured()]
     as_dict = lambda t: {"qr": t[0], "week": t[1], "ver": t[2], "det": t[3], "ls": t[4], "ss": t[5], "mjd": t[8]}
     grid = {}
     for f in frames:
@@ -634,7 +646,6 @@ def build_packs(frames):
             fr.append({"qr": qr, "week": week, "ver": ver, "det": int(det), "ls": int(ls), "ss": int(ss), "mjd": float(t)})
 
         def pos(f, tr=tr, tms=tms):
-            import bisect
             k = min(len(tr) - 1, max(1, bisect.bisect_left(tms, f["mjd"])))
             a, c = tr[k - 1], tr[k]
             u = min(1, max(0, (f["mjd"] - a[0]) / ((c[0] - a[0]) or 1)))
@@ -645,7 +656,7 @@ def build_packs(frames):
         if fr:
             targets.append({"key": f"m_{m['id']}", "frames": fr, "pos": pos})
     log(f"packs: building {len(targets)} target packs")
-    n = packs.build(OUT, targets, log)
+    packs.build(OUT, targets, log)
     return sorted(t["key"] for t in targets if os.path.exists(os.path.join(OUT, "packs", t["key"] + ".bin")))
 
 
@@ -685,6 +696,21 @@ def restore_index(meta):
     return ok > 0.95 * max(1, len(tiles))
 
 
+def previous_meta():
+    for base in PREV_BASES:
+        try:
+            return json.loads(http(base.rstrip("/") + "/meta.json", timeout=60, tries=2))
+        except Exception:  # noqa: BLE001
+            continue
+    return {}
+
+
+def restore_packs():
+    """Bring back the previously published target packs; returns their keys."""
+    keys = previous_meta().get("packs") or []
+    return [k for k in keys if restore(f"packs/{k}.bin", True)]
+
+
 def frames_from_tiles():
     """Rebuild the frame list from the (restored) binary tiles."""
     frames = []
@@ -720,7 +746,7 @@ def reuse_previous():
     prev = read_json("meta.json", {}) or {}
     for k in prev.get("packs") or []:
         restore(f"packs/{k}.bin", True)
-    log("reused previous data")
+    log("reused previous data (meta, index, catalogues, packs)")
     return True
 
 
@@ -777,9 +803,10 @@ def main():
             status["packs"] = "ok"
         except Exception as e:  # noqa: BLE001
             log("packs FAILED:", e)
-            for k in (meta.get("packs") or []):
-                restore(f"packs/{k}.bin", True)
+            meta["packs"] = restore_packs()
             status["packs"] = f"kept previous ({e.__class__.__name__})"
+    else:
+        meta["packs"] = restore_packs()
 
     try:
         meta["s3Latest"] = latest_s3()

@@ -20,15 +20,6 @@ export function h(tag, attrs = {}, ...kids) {
   for (const c of kids.flat()) if (c != null && c !== false) e.append(c instanceof Node ? c : String(c));
   return e;
 }
-export function svgUse(id, cls = 'ic') {
-  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  s.setAttribute('class', cls);
-  s.setAttribute('aria-hidden', 'true');
-  const u = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  u.setAttribute('href', '#' + id);
-  s.append(u);
-  return s;
-}
 
 export function toast(msg, kind = '', ms = 4200, action) {
   const box = $('#toasts');
@@ -39,8 +30,6 @@ export function toast(msg, kind = '', ms = 4200, action) {
 }
 
 export const mjdToDate = m => new Date((m - 40587) * 86400000);
-export const dateToMjd = d => d.getTime() / 86400000 + 40587;
-export const nowMjd = () => Date.now() / 86400000 + 40587;
 export function fmtDate(m, withTime = false) {
   const d = mjdToDate(m);
   const s = d.toISOString();

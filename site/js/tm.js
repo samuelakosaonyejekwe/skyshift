@@ -1,12 +1,12 @@
 // SkyShift - Time Machine: stream, display, compare, measure and hunt.
 import { $, $$, h, toast, fmtDate, fmtShortDate, fmtCoord, galStr, fmtBytes, fmtInt, download, slug, clamp, waveColor, mjdToDate } from './util.js';
 import { framesNear, getJSON, getBin } from './data.js';
-import { S3, BANDS, frameKey, obsId, skyToTan, tanToSky, cutout as cutoutMain, WCS, flagsNear, parseHeader } from './fits.js';
+import { S3, BANDS, frameKey, obsId, skyToTan, tanToSky, cutout as cutoutMain, WCS, flagsNear, parseHeader, AUTO_FAST_FIRST } from './fits.js';
 import * as R from './render.js';
 import { chart } from './charts.js';
 import { encodeGIF } from './gif.js';
 import * as store from './store.js';
-import { unpack, objectsInFieldPrecise, precise, toSpacecraft, setEphem, hasEphem, sep } from './orbits.js';
+import { unpack, objectsInFieldPrecise, precise, toSpacecraft, setEphem, sep } from './orbits.js';
 
 const D2R = Math.PI / 180;
 const VISIT_GAP = 20;           // days between survey visits
@@ -76,10 +76,10 @@ function refImage(sv, tg, N) {
 }
 
 // Pre-built packs (tools/packs.py): featured targets open with one download
-const HALF = new Float32Array(65536);
-for (let h = 0; h < 65536; h++) {
-  const e = (h >> 10) & 31, m = h & 1023, sg = h >> 15 ? -1 : 1;
-  HALF[h] = e === 0 ? sg * m * 2 ** -24 : e === 31 ? (m ? NaN : sg * Infinity) : sg * (1 + m / 1024) * 2 ** (e - 15);
+const HALF = new Float32Array(65536);      // IEEE half -> float lookup
+for (let u = 0; u < 65536; u++) {
+  const e = (u >> 10) & 31, m = u & 1023, sg = u >> 15 ? -1 : 1;
+  HALF[u] = e === 0 ? sg * m * 2 ** -24 : e === 31 ? (m ? NaN : sg * Infinity) : sg * (1 + m / 1024) * 2 ** (e - 15);
 }
 async function loadPack(key) {
   if (ctx.settings.size !== 64 || ctx.settings.mask) return null;
@@ -188,9 +188,9 @@ async function ssoFrames(o) {
   for (let t = t0; t <= t1 + 1; t += 1) pos.push([t, precise(o, t, [t0, t1])]);
   // tiles along the path, then exact containment per frame
   const seen = new Map();
-  const step = Math.max(1, Math.floor(pos.length / 160));
+  const stride = Math.max(1, Math.floor(pos.length / 160));
   const tasks = [];
-  for (let k = 0; k < pos.length; k += step) {
+  for (let k = 0; k < pos.length; k += stride) {
     const g = pos[k][1];
     tasks.push(framesNear(g.ra, g.dec, 2.6).then(fr => { for (const f of fr) seen.set(frameKey(f), f); }));
   }
@@ -224,6 +224,7 @@ function newSession(target) {
   $('#specChart').textContent = ''; $('#lcChart').textContent = '';
   $('#targetInfo').textContent = '';
   $('#frameInfo').textContent = '';
+  $('#loadNote').textContent = '';
   $('#loadMore').hidden = true;
   setMode(S.mode, true);
   clearCanvas();
@@ -390,7 +391,7 @@ async function loadFrames(list) {
     await Promise.all(Array.from({ length: 4 }, async () => {
       while (q.length && !ctl.signal.aborted) {
         const i = q.shift();
-        try { onFrame(i, await cutoutMain(todo[i], todoT[i], { ...o, mode: o.mode === 'auto' ? (i < 8 ? 'fast' : 'saver') : o.mode }, ctl.signal)); } catch { onErr(i); }
+        try { onFrame(i, await cutoutMain(todo[i], todoT[i], { ...o, mode: o.mode === 'auto' ? (i < AUTO_FAST_FIRST ? 'fast' : 'saver') : o.mode }, ctl.signal)); } catch { onErr(i); }
       }
     }));
     settle();
@@ -492,7 +493,7 @@ function derived(it) {
 function composite(key, items) {
   if (S.comp.has(key)) return S.comp.get(key);
   if (!items.length) return null;
-  const size = items[0].r.size;
+  const n = items[0].r.size;
   // normalise each frame by its robust noise so different wavelengths mix fairly
   const arrs = items.map(it => {
     const d = derived(it).base;
@@ -501,7 +502,7 @@ function composite(key, items) {
     for (let i = 0; i < d.length; i++) a[i] = d[i] / sig;
     return a;
   });
-  const c = R.fillHoles(R.medianStack(arrs, size), size);
+  const c = R.fillHoles(R.medianStack(arrs, n), n);
   S.comp.set(key, c);
   return c;
 }
@@ -577,21 +578,19 @@ function setMsg(m) {
   el.textContent = m;
 }
 
-let lastRenderToken = 0;
 export function render() {
   if (!S) return;
-  const token = ++lastRenderToken;
-  void token;
   const vis = visible();
   const N = size();
-  const cv = $('#cv'), cv2 = $('#cv2'), ref = $('#refImg');
+  const cv = $('#cv'), cv2 = $('#cv2'), refEl = $('#refImg');
   const smooth = $('#optSmooth').checked, F = smooth ? 4 : 1, M = N * F;
   cv.width = cv.height = M; cv2.width = cv2.height = M;
   const c = cv.getContext('2d'), c2 = cv2.getContext('2d');
   const up = d => (F > 1 ? R.upsample(d, N, F) : d);
   const stretch = $('#optStretch').value, cmap = $('#optCmap').value;
   const swipe = $('#swipe');
-  cv2.hidden = true; ref.hidden = true; swipe.hidden = true;
+  cv2.hidden = true; refEl.hidden = true; swipe.hidden = true;
+  $('#hudTL').classList.toggle('big', S.mode === 'movie');
   $('#stage').classList.toggle('smooth', smooth);
   if (!vis.length) {
     if (S.items.length) setMsg('No images in the selected bands yet. Choose another band.');
@@ -610,10 +609,7 @@ export function render() {
     S.cur = clamp(S.cur, 0, vis.length - 1);
     const it = vis[S.cur];
     drawMono(c, derived(it).fill);
-    const b = BANDS[it.f.det];
     hud(`${fmtShortDate(it.r.mjd)}`, `${it.r.wave.toFixed(3)} µm · band ${it.f.det}`, `${S.cur + 1} / ${vis.length} · ${S.visits.length > 1 ? 'visit ' + (it.visit + 1) : ''}`, scaleBar);
-    $('#hudTL').classList.add('big');
-    void b;
     renderFrameInfo(it);
     drawOverlay(it);
     $('#pScrub').value = S.cur;
@@ -688,10 +684,10 @@ export function render() {
     const first = S.items.reduce((a, it) => Math.min(a, it.r.mjd), 1e9), last = S.items.reduce((a, it) => Math.max(a, it.r.mjd), 0);
     hud(`◀ ${label} (${mjdToDate(first).getUTCFullYear()}${mjdToDate(last).getUTCFullYear() !== mjdToDate(first).getUTCFullYear() ? '–' + String(mjdToDate(last).getUTCFullYear()).slice(2) : ''})`, `${sv.short} (${sv.years}) ▶`, 'Drag the slider to compare then and now', scaleBar);
     swipe.hidden = false;
-    const token = (S.refToken = (S.refToken || 0) + 1);
-    refImage(sv, tg, N).then(ref => {
-      if (!S || S.mode !== 'then' || S.refToken !== token) return;
-      let d = $('#optBg').checked ? R.subtractBackground(ref, N, Math.max(20, N / 3)) : ref;
+    const refToken = (S.refToken = (S.refToken || 0) + 1);
+    refImage(sv, tg, N).then(refData => {
+      if (!S || S.mode !== 'then' || S.refToken !== refToken) return;
+      let d = $('#optBg').checked ? R.subtractBackground(refData, N, Math.max(20, N / 3)) : refData;
       d = R.fillHoles(d, N);
       drawMono(cv2.getContext('2d'), d, R.levels(d, 'sky', [25, 99.6]));
       cv2.hidden = false;
@@ -859,8 +855,7 @@ async function computeKnown() {
     const N = size();
     const rad = N * 6.15 / 3600 * 0.75;
     const out = [];
-    // fixed field: one centre; mover mode: per-frame centre, so evaluate per item
-    // moving targets: one search per visit (centre = mean position, radius
+    // fixed field: one search around the target; moving targets: one search per visit (centre = mean position, radius
     // widened to cover the object's motion); exact per-image filtering follows
     let groups;
     if (S.target.kind === 'fixed') groups = [{ c: S.target, items: S.items, r: rad }];
@@ -1119,7 +1114,7 @@ async function hunt() {
       if (n < 15 || ann.length < 20) return null;
       ann.sort((a, b) => a - b);
       const bg = ann[ann.length >> 1], sd = (ann[Math.floor(ann.length * 0.84)] - ann[Math.floor(ann.length * 0.16)]) / 2;
-      return { f: sum - bg * n, e: sd * Math.sqrt(n), peak: Math.max(...ann.slice(-1)) };
+      return { f: sum - bg * n, e: sd * Math.sqrt(n) };
     };
     const need = bandPairs.length >= 2 ? 2 : 1;
     const seen = [];
@@ -1211,9 +1206,9 @@ function renderHunt() {
       h('button', { class: 'btn sm', type: 'button', text: H.showLow ? 'Hide them' : 'Show them', onclick: () => { H.showLow = !H.showLow; renderHunt(); drawOverlay(currentItem()); } })));
   }
   for (const d of shown.slice(0, 80)) {
-    const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: 'pill change', text: d.pm ? 'MOVED' : d.sign > 0 ? 'BRIGHTER' : 'FAINTER' })
+    const pill = d.known ? h('span', { class: 'pill known', text: 'KNOWN' }) : d.kind === 'change' ? h('span', { class: 'pill change', text: d.sign > 0 ? 'BRIGHTER' : 'FAINTER' })
       : d.conf === 'high' ? h('span', { class: 'pill cand', title: 'Star-shaped, clean pixels in SPHEREx quality flags, high S/N', text: 'VERIFIED ✓' }) : h('span', { class: 'pill', title: d.flagBits > 0 ? 'SPHEREx quality flags mark these pixels' : 'Weak or not verified', text: d.flagBits > 0 ? 'FLAGGED' : 'LOW' });
-    const title = d.known ? d.known : d.kind === 'change' ? (d.pm ? `Shifted ≈${d.pm.toFixed(0)}″ between visits` : `${d.sign > 0 ? 'Brightened' : 'Faded'} between visits`) : `Single-image source at ${d.wave.toFixed(2)} µm`;
+    const title = d.known ? d.known : d.kind === 'change' ? `${d.sign > 0 ? 'Brightened' : 'Faded'} between visits` : `Single-image source at ${d.wave.toFixed(2)} µm`;
     out.append(h('div', { class: 'item' }, pill,
       h('div', { class: 'grow' }, h('b', { text: title }), h('span', { class: 't', text: `${d.ra.toFixed(5)}°, ${d.dec.toFixed(5)}° · S/N ${d.snr.toFixed(0)}${d.mjd ? ' · ' + fmtDate(d.mjd, true) : ''}` })),
       h('button', { class: 'btn sm', type: 'button', text: 'Show', onclick: () => { S.hunt.sel = d; if (d.mjd) jumpToMjd(d.mjd); else { setMode('diff'); } } }),
@@ -1227,7 +1222,7 @@ async function saveFind(d) {
   const id = `${S.target.name}|${d.ra.toFixed(5)}|${d.dec.toFixed(5)}|${d.mjd || ''}`;
   await store.put('finds', id, {
     id, target: S.target.name, kind: d.kind, ra: d.ra, dec: d.dec, mjd: d.mjd || null, date: d.mjd ? fmtDate(d.mjd, true) : null,
-    wave: d.wave || null, snr: d.snr, note: d.pm ? `moved ${d.pm.toFixed(0)}"` : d.sign ? (d.sign > 0 ? 'brightened' : 'faded') : 'single-image source',
+    wave: d.wave || null, snr: d.snr, note: d.sign ? (d.sign > 0 ? 'brightened' : 'faded') : 'single-image source',
     frame: d.it ? frameKey(d.it.f) : null, saved: new Date().toISOString(),
   });
   toast('Saved to My finds ★', 'ok');
@@ -1540,7 +1535,7 @@ function bindUI() {
   $('#tmSave').onclick = () => S && toggleSave();
   $('#tmShare').onclick = () => S && share();
   $('#loadMore').onclick = () => {
-    if (!S) return;
+    if (!S || S.pending > 0) { toast('Please wait until the current images have loaded.'); return; }
     const have = new Set(S.chosen.map(frameKey));
     S.moreFrom = S.items.length;
     const more = chooseFrames(S.frames.filter(f => !have.has(frameKey(f))), ctx.settings.max);
@@ -1562,7 +1557,12 @@ function bindUI() {
   // tap image to place the photometry aperture; wheel/pinch to zoom
   const stage = $('#stage');
   const zoomEls = () => ['#cv', '#cv2', '#ov', '#refImg'].map(s => $(s));
-  const applyZoom = () => { const z = S.zoom; zoomEls().forEach(el => { el.style.transform = `translate(${z.x}px, ${z.y}px) scale(${z.k})`; el.style.transformOrigin = '0 0'; }); };
+  const applyZoom = () => {
+    const z = S.zoom;
+    zoomEls().forEach(el => { el.style.transform = `translate(${z.x}px, ${z.y}px) scale(${z.k})`; el.style.transformOrigin = '0 0'; });
+    // let the page scroll over the image unless it is zoomed in (then drag pans)
+    stage.style.touchAction = z.k > 1 ? 'none' : 'pan-y';
+  };
   const ptrs = new Map();
   let start = null, moved = false, pinch = null;
   stage.addEventListener('pointerdown', e => {
@@ -1605,8 +1605,15 @@ function bindUI() {
     toast(`Measuring at ${sky[0].toFixed(5)}°, ${sky[1].toFixed(5)}°. See “Spectrum & light curve”`, '', 2600);
   });
   stage.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); pinch = null; });
-  stage.addEventListener('wheel', e => { if (!S) return; e.preventDefault(); zoomAt(S.zoom.k * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX, e.clientY); }, { passive: false });
+  // wheel zooms only with Ctrl/Cmd (or a trackpad pinch) or once zoomed in, so
+  // ordinary scrolling still scrolls the page
+  stage.addEventListener('wheel', e => {
+    if (!S || !(e.ctrlKey || e.metaKey || S.zoom.k > 1)) return;
+    e.preventDefault();
+    zoomAt(S.zoom.k * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX, e.clientY);
+  }, { passive: false });
   stage.addEventListener('dblclick', () => { if (S) { S.zoom = { k: 1, x: 0, y: 0 }; applyZoom(); } });
+  stage.style.touchAction = 'pan-y';
   new ResizeObserver(() => { if (S) { drawOverlay(currentItem()); drawTimeline(); } }).observe(stage);
   $('#timeline').addEventListener('pointerdown', e => {
     if (!S || !S.tl) return;
