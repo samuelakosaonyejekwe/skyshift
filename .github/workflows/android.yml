@@ -54,9 +54,22 @@ jobs:
           echo "Newest Android platform available: $latest"
           sed -i -E "s/(compileSdkVersion|targetSdkVersion|compileSdk|targetSdk)[ =]+[0-9]+/\1 $latest/" app/build.gradle || true
           grep -E "compileSdk|targetSdk|minSdk" app/build.gradle || true
-          bubblewrap build --skipPwaValidation --manifest=./twa-manifest.json
-          ls -la *.apk *.aab
-          "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/aapt2 dump badging app-release-signed.apk | grep -E "package:|targetSdkVersion|sdkVersion" || true
+          # build with Gradle, then align and sign with the official Android tools
+          chmod +x gradlew
+          ./gradlew --no-daemon -q assembleRelease bundleRelease
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          unsigned=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          "$BT/zipalign" -f -p 4 "$unsigned" aligned.apk
+          "$BT/apksigner" sign --ks skyshift.keystore --ks-key-alias skyshift \
+            --ks-pass env:BUBBLEWRAP_KEYSTORE_PASSWORD --key-pass env:BUBBLEWRAP_KEY_PASSWORD \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out app-release-signed.apk aligned.apk
+          "$BT/apksigner" verify --print-certs app-release-signed.apk | head -5
+          aab=$(ls app/build/outputs/bundle/release/*.aab | head -1)
+          cp "$aab" app-release-bundle.aab
+          jarsigner -keystore skyshift.keystore -storepass "$BUBBLEWRAP_KEYSTORE_PASSWORD" -keypass "$BUBBLEWRAP_KEY_PASSWORD" app-release-bundle.aab skyshift >/dev/null
+          ls -la app-release-signed.apk app-release-bundle.aab
+          "$BT/aapt2" dump badging app-release-signed.apk | grep -E "package:|targetSdkVersion|sdkVersion" || true
 
       - name: Publish the app file to the `app` branch
         run: |
